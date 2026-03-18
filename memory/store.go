@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// MemoryStore is the contract every memory backend must satisfy.
+// Store is the contract every memory backend must satisfy.
 //
 // Routex agents have two kinds of memory — and this interface serves both:
 //
@@ -21,7 +21,7 @@ import (
 // Two backends implement this interface:
 //   - InMemStore  (memory/inmem.go)  — fast, no dependencies, lost on restart
 //   - RedisStore  (memory/redis.go)  — persistent, survives restarts, shareable
-type MemoryStore interface {
+type Store interface {
 	// Set stores a value under a key.
 	// ttl controls how long the value lives. Zero means no expiry.
 	// Use namespaced keys to avoid collisions between agents:
