@@ -214,7 +214,7 @@ func (a *Agent) process(msg Message) Result {
 		Output:     output,
 		ToolCalls:  toolCalls,
 		TokensUsed: tokens,
-		Duration:   start, // runtime calculates elapsed using time.Since(result.Duration)
+		Duration:   start,
 		Err:        lastErr,
 	}
 }
@@ -239,12 +239,11 @@ func (a *Agent) think(ctx context.Context, msg Message) (string, []tools.ToolCal
 	)
 
 	// Seed the history with the incoming task as the first user message
-	firstMessage := memory.Message{
+	if err := a.mem.Append(ctx, histKey, memory.Message{
 		Role:      "user",
 		Content:   msg.Input,
 		Timestamp: time.Now(),
-	}
-	if err := a.mem.Append(ctx, histKey, firstMessage); err != nil {
+	}); err != nil {
 		return "", nil, 0, fmt.Errorf("seed history: %w", err)
 	}
 
@@ -283,7 +282,7 @@ func (a *Agent) think(ctx context.Context, msg Message) (string, []tools.ToolCal
 		// Accumulate token usage across all turns
 		totalTokens += resp.Usage.Total()
 
-		// ── Case 1: LLM wants to call a tool ────────────────────────────
+		// ─────────── LLM wants to call a tool ────────────────────────────
 		if resp.ToolCall != nil {
 			tc := resp.ToolCall
 
@@ -348,7 +347,7 @@ func (a *Agent) think(ctx context.Context, msg Message) (string, []tools.ToolCal
 			continue
 		}
 
-		// ── Case 2: LLM produced a text response — we are done ──────────
+		// ──────────── LLM produced a text response — we are done ──────────
 		if resp.Content != "" {
 			a.logger.Info("agent finished", "tokens", totalTokens, "tool_calls", len(toolCallLog))
 

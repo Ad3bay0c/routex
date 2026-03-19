@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // Tool is the contract every tool in Routex must satisfy.
@@ -68,6 +69,27 @@ type Parameter struct {
 	// Required marks whether the LLM must include this field.
 	// Missing required fields cause the tool call to be rejected.
 	Required bool
+}
+
+// ToolCall is a record of a single tool execution by an agent.
+// Stored in AgentResult.ToolCalls so you can see exactly what the agent did,
+// what input it sent, what came back, and how long it took.
+type ToolCall struct {
+	// ToolName matches the name returned by Tool.Name().
+	ToolName string
+
+	// Input is the raw JSON the LLM passed to Tool.Execute().
+	Input string
+
+	// Output is the raw JSON Tool.Execute() returned.
+	// Empty if the tool call failed.
+	Output string
+
+	// Duration is how long Tool.Execute() took to complete.
+	Duration time.Duration
+
+	// Error is non-nil if Tool.Execute() returned an error.
+	Error error
 }
 
 // Registry holds all tools that have been registered with the runtime.
