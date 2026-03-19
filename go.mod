@@ -4,6 +4,7 @@ go 1.25.1
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.27.1
+	github.com/google/uuid v1.6.0
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/sashabaranov/go-openai v1.41.2
 	gopkg.in/yaml.v3 v3.0.1
