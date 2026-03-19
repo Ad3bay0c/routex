@@ -78,21 +78,23 @@ func NewAnthropicAdapter(cfg Config) (*AnthropicAdapter, error) {
 //  1. Call Complete() with history + tool schemas
 //  2. If response has ToolCall → execute tool → append result → go to 1
 //  3. If response has Content  → agent is done, return content
+//
+// This satisfies the Adapter interface.
 func (a *AnthropicAdapter) Complete(ctx context.Context, req Request) (Response, error) {
-	// Apply per-call timeout on top of the context passed in.
+	// Apply per-call timeout
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	// translate our history into Anthropic's message format
+	// Translate our history into Anthropic's message format
 	messages, err := buildAnthropicMessages(req.History)
 	if err != nil {
 		return Response{}, fmt.Errorf("anthropic: build messages: %w", err)
 	}
 
-	// translate our tool schemas into Anthropic's tool format
+	// Translate our tool schemas into Anthropic's tool format
 	anthropicTools := buildAnthropicTools(req.ToolSchemas)
 
-	// choose effective token and temperature values
+	// Choose effective token and temperature values
 	// Per-request values override the adapter defaults
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
@@ -104,7 +106,7 @@ func (a *AnthropicAdapter) Complete(ctx context.Context, req Request) (Response,
 		temperature = a.temperature
 	}
 
-	// build the API request
+	// Build the API request
 	params := anthropic.MessageNewParams{
 		Model:     a.model,
 		MaxTokens: int64(maxTokens),
@@ -120,13 +122,13 @@ func (a *AnthropicAdapter) Complete(ctx context.Context, req Request) (Response,
 		params.Tools = anthropicTools
 	}
 
-	// make the API call
+	// Make the API call
 	msg, err := a.client.Messages.New(ctx, params)
 	if err != nil {
 		return Response{}, fmt.Errorf("anthropic: api call failed: %w", err)
 	}
 
-	// translate Anthropic's response back into our Response type
+	// Translate Anthropic's response back into our Response type
 	return translateAnthropicResponse(msg), nil
 }
 
@@ -235,6 +237,9 @@ func buildAnthropicTools(schemas map[string]tools.Schema) []anthropic.ToolUnionP
 
 		inputSchema := anthropic.ToolInputSchemaParam{
 			Properties: properties,
+		}
+		if len(required) > 0 {
+			inputSchema.Required = required
 		}
 
 		anthropicTools = append(anthropicTools, anthropic.ToolUnionParam{
