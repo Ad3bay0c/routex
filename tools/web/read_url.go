@@ -1,4 +1,4 @@
-package tools
+package web
 
 import (
 	"context"
@@ -10,10 +10,12 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Ad3bay0c/routex/tools"
 )
 
 func init() {
-	RegisterBuiltin("read_url", func(cfg ToolConfig) (Tool, error) {
+	tools.RegisterBuiltin("read_url", func(cfg tools.ToolConfig) (tools.Tool, error) {
 		return ReadURL(), nil
 	})
 }
@@ -64,12 +66,12 @@ func (t *ReadURLTool) Name() string {
 
 // Schema describes this tool to the LLM.
 // This satisfies the Tool interface.
-func (t *ReadURLTool) Schema() Schema {
-	return Schema{
+func (t *ReadURLTool) Schema() tools.Schema {
+	return tools.Schema{
 		Description: "Fetch and read the text content of a webpage. " +
 			"Use this to read articles, documentation, or any web page in full. " +
 			"Returns clean plain text with HTML tags removed.",
-		Parameters: map[string]Parameter{
+		Parameters: map[string]tools.Parameter{
 			"url": {
 				Type:        "string",
 				Description: "The full URL of the page to read. Must start with http:// or https://",
@@ -223,4 +225,4 @@ func cleanWhitespace(s string) string {
 }
 
 // compile-time interface check
-var _ Tool = (*ReadURLTool)(nil)
+var _ tools.Tool = (*ReadURLTool)(nil)

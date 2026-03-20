@@ -1,4 +1,4 @@
-package tools
+package file
 
 import (
 	"context"
@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/Ad3bay0c/routex/tools"
 )
 
 func init() {
-	RegisterBuiltin("write_file", func(cfg ToolConfig) (Tool, error) {
+	tools.RegisterBuiltin("write_file", func(cfg tools.ToolConfig) (tools.Tool, error) {
 		return WriteFile(), nil
 	})
 }
@@ -71,12 +73,12 @@ func (t *WriteFileTool) Name() string {
 
 // Schema describes this tool to the LLM.
 // This satisfies the Tool interface.
-func (t *WriteFileTool) Schema() Schema {
-	return Schema{
+func (t *WriteFileTool) Schema() tools.Schema {
+	return tools.Schema{
 		Description: "Write text content to a file on disk. " +
 			"Use this to save reports, summaries, or any output that should persist. " +
 			"Creates parent directories automatically if they do not exist.",
-		Parameters: map[string]Parameter{
+		Parameters: map[string]tools.Parameter{
 			"path": {
 				Type:        "string",
 				Description: "File path to write to. Example: 'report.md' or 'outputs/summary.txt'",
@@ -177,4 +179,4 @@ func (t *WriteFileTool) Execute(_ context.Context, input json.RawMessage) (json.
 }
 
 // compile-time interface check
-var _ Tool = (*WriteFileTool)(nil)
+var _ tools.Tool = (*WriteFileTool)(nil)

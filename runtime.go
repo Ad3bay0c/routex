@@ -20,7 +20,9 @@ import (
 	// Blank imports trigger each tool's init() function,
 	// registering their factories in the built-in registry.
 	// Remove any of these lines to exclude that tool from auto-discovery.
-	_ "github.com/Ad3bay0c/routex/tools"
+	_ "github.com/Ad3bay0c/routex/tools/file"
+	_ "github.com/Ad3bay0c/routex/tools/search"
+	_ "github.com/Ad3bay0c/routex/tools/web"
 )
 
 // Runtime is the heart of Routex.

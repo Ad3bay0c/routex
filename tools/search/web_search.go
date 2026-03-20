@@ -1,4 +1,4 @@
-package tools
+package search
 
 import (
 	"context"
@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/Ad3bay0c/routex/tools"
 )
 
 func init() {
-	RegisterBuiltin("web_search", func(cfg ToolConfig) (Tool, error) {
+	tools.RegisterBuiltin("web_search", func(cfg tools.ToolConfig) (tools.Tool, error) {
 		return WebSearch(), nil
 	})
 }
@@ -89,12 +91,12 @@ func (t *WebSearchTool) Name() string {
 // The description tells the LLM what the tool does.
 // The parameters tell the LLM what JSON to produce when calling it.
 // This satisfies the Tool interface.
-func (t *WebSearchTool) Schema() Schema {
-	return Schema{
+func (t *WebSearchTool) Schema() tools.Schema {
+	return tools.Schema{
 		Description: "Search the web for current information about a topic. " +
 			"Use this when you need facts, recent events, or data you do not already know. " +
 			"Returns a list of relevant results with titles, URLs, and snippets.",
-		Parameters: map[string]Parameter{
+		Parameters: map[string]tools.Parameter{
 			"query": {
 				Type:        "string",
 				Description: "The search query. Be specific for better results. Example: 'Go programming language concurrency patterns 2024'",
@@ -235,4 +237,4 @@ func extractTitle(text string) string {
 }
 
 // compile-time interface check
-var _ Tool = (*WebSearchTool)(nil)
+var _ tools.Tool = (*WebSearchTool)(nil)
