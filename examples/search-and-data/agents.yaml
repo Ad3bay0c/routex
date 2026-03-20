@@ -1,0 +1,100 @@
+# ─────────────────────────────────────────────────────────────────
+# Routex example — Search & Data tools
+#
+# This crew uses three search tools to research a topic deeply:
+#   1. planner    — uses wikipedia to get background context
+#   2. researcher — uses brave_search to find recent sources
+#   3. deep_reader — uses scrape to read the best source in full
+#   4. writer     — synthesizes everything into a final report
+#
+# Tools used:
+#   wikipedia    — free, no key needed
+#   brave_search — needs BRAVE_API_KEY
+#   scrape       — needs SCRAPINGBEE_API_KEY
+#
+# Run:
+#   export ANTHROPIC_API_KEY=sk-ant-...
+#   export BRAVE_API_KEY=BSA...
+#   export SCRAPINGBEE_API_KEY=...
+#   go run .
+# ─────────────────────────────────────────────────────────────────
+
+runtime:
+  name:         "search-and-data-crew"
+  llm_provider: "anthropic"
+  model:        "claude-sonnet-4-6"
+  api_key:      "env:ANTHROPIC_API_KEY"
+  log_level:    "info"
+
+task:
+  input:        "Research the current state of AI agents in production systems"
+  output_file:  "research_report.md"
+  max_duration: "8m"
+
+tools:
+  # no API key needed
+  - name: "wikipedia"
+    extra:
+      language: "en"
+
+  # Paid — 2,000 free queries/month
+  - name: "brave_search"
+    api_key: "env:BRAVE_API_KEY"
+    max_results: 6
+
+  # Paid — 1,000 free credits/month
+  - name: "scrape"
+    api_key: "env:SCRAPINGBEE_API_KEY"
+
+  # Always include write_file so the writer can save the report
+  - name: "write_file"
+    base_dir: "./outputs"
+
+agents:
+
+  # 1. Get background knowledge from Wikipedia
+  - id:          "background"
+    role:        "researcher"
+    goal:        "Use Wikipedia to get a solid factual overview of AI agents — what they are, how they work, key concepts"
+    tools:       ["wikipedia"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+
+  # 2. Find recent sources — runs after background
+  - id:          "searcher"
+    role:        "researcher"
+    goal:        "Use Brave Search to find the 3 most relevant and recent articles, papers, or blog posts on the topic"
+    tools:       ["brave_search"]
+    depends_on:  ["background"]
+    restart:     "one_for_one"
+    max_retries: 3
+    timeout:     "60s"
+
+  # 3. Deep-read the best source — runs after searcher
+  - id:          "deep_reader"
+    role:        "researcher"
+    goal:        "Pick the single most relevant URL from the search results and scrape its full content for detailed information"
+    tools:       ["scrape"]
+    depends_on:  ["searcher"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "90s"
+
+  # 4. Write the final report — runs after all research is done
+  - id:          "writer"
+    role:        "writer"
+    goal:        "Synthesise the Wikipedia background, search results, and deep-read content into a comprehensive research report with sections, key findings, and sources"
+    tools:       ["write_file"]
+    depends_on:  ["deep_reader"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "120s"
+
+memory:
+  backend: "inmem"
+  ttl:     "1h"
+
+observability:
+  tracing: false
+  metrics: false
