@@ -23,7 +23,9 @@ import (
 	"github.com/Ad3bay0c/routex"
 	"github.com/Ad3bay0c/routex/agents"
 	"github.com/Ad3bay0c/routex/llm"
-	"github.com/Ad3bay0c/routex/tools"
+	"github.com/Ad3bay0c/routex/tools/file"
+	"github.com/Ad3bay0c/routex/tools/search"
+	"github.com/Ad3bay0c/routex/tools/web"
 )
 
 func main() {
@@ -50,12 +52,12 @@ func main() {
 	}
 
 	// ───────────────── Register tools ────────────────────────────────────
-	rt.RegisterTool(tools.WebSearch())
-	rt.RegisterTool(tools.ReadURL())
+	rt.RegisterTool(search.WebSearch())
+	rt.RegisterTool(web.ReadURL())
 
 	// WriteFileIn sandboxes file writes to the ./outputs directory
 	// — agents cannot write files outside it
-	rt.RegisterTool(tools.WriteFileIn("./outputs"))
+	rt.RegisterTool(file.WriteFileIn("./outputs"))
 
 	// ───────────────── Add agents programmatically ──────────────────────
 	// Each AddAgent() call mirrors one entry under agents: in YAML.
