@@ -9,6 +9,15 @@ import (
 	"github.com/Ad3bay0c/routex/agents"
 )
 
+// agentNode is the minimal interface the scheduling algorithms need.
+// *agents.Agent satisfies this — and so do test stubs.
+// Keeping the algorithm on this interface makes it testable without
+// importing the full agents package.
+type agentNode interface {
+	ID() string
+	DependsOn() []string
+}
+
 // Scheduler determines the order agents run in based on their
 // depends_on relationships and dispatches work to each agent
 // at the right moment.
@@ -58,57 +67,56 @@ func New(agentList []*agents.Agent, logger *slog.Logger) *Scheduler {
 // Returns a map of agentID → Result containing every agent's output.
 // The runtime uses this to build the final Result returned to the caller.
 func (s *Scheduler) Run(ctx context.Context, initialInput string) (map[string]agents.Result, error) {
-	// ─────────────── validate the dependency graph ───────────────
-	// Catch any reference to itself (a→a)
+	// Step 1 — validate the dependency graph
 	// Catch cycles (a→b→a) before any agent runs
 	if err := s.validateGraph(); err != nil {
 		return nil, fmt.Errorf("scheduler: invalid dependency graph: %w", err)
 	}
 
-	// ─────────────── compute execution waves via topological sort ───────────────
+	// Step 2 — compute execution waves via topological sort
 	// A wave is a group of agents that can all run in parallel
 	// because none of them depend on each other
-	waveAgents, err := s.buildWaveAgents()
+	waves, err := s.buildWaves()
 	if err != nil {
 		return nil, fmt.Errorf("scheduler: %w", err)
 	}
 
-	s.logger.Info("execution plan ready", "waveAgents", len(waveAgents))
-	for i, waves := range waveAgents {
-		agentIDs := make([]string, len(waves))
-		for j, agent := range waves {
-			agentIDs[j] = agent.ID()
+	s.logger.Info("execution plan ready", "waves", len(waves))
+	for i, wave := range waves {
+		ids := make([]string, len(wave))
+		for j, a := range wave {
+			ids[j] = a.ID()
 		}
-		s.logger.Debug("wave", "number", i+1, "agents", agentIDs)
+		s.logger.Debug("wave", "number", i+1, "agents", ids)
 	}
 
-	// ─────────────── execute each wave in order ───────────────
+	// Step 3 — execute each wave in order
 	// Agents within a wave run in parallel.
 	// The next wave only starts when every agent in the current wave succeeds.
-	results := make(map[string]agents.Result) // map[agentID]agents
+	results := make(map[string]agents.Result)
 
 	// The first agent in the first wave gets the raw user input.
 	// Subsequent agents get the output of their dependencies.
 	currentInput := initialInput
 
-	for waveNum, waves := range waveAgents {
-		s.logger.Info("starting wave", "number", waveNum+1, "size", len(waves))
+	for waveNum, wave := range waves {
+		s.logger.Info("starting wave", "number", waveNum+1, "size", len(wave))
 
-		waveAgentResults, err := s.runWaveAgents(ctx, waves, currentInput, results)
+		waveResults, err := s.runWave(ctx, wave, currentInput, results)
 		if err != nil {
 			return results, fmt.Errorf("wave %d failed: %w", waveNum+1, err)
 		}
 
 		// Merge wave results into the overall results map
-		for id, result := range waveAgentResults {
+		for id, result := range waveResults {
 			results[id] = result
 		}
 
 		// The input for the next wave is the output of the last agent
 		// in this wave — agents pass their work forward like a relay race
-		if len(waves) > 0 {
-			lastAgent := waves[len(waves)-1]
-			if r, ok := waveAgentResults[lastAgent.ID()]; ok && r.Err == nil {
+		if len(wave) > 0 {
+			lastAgent := wave[len(wave)-1]
+			if r, ok := waveResults[lastAgent.ID()]; ok && r.Err == nil {
 				currentInput = r.Output
 			}
 		}
@@ -117,13 +125,169 @@ func (s *Scheduler) Run(ctx context.Context, initialInput string) (map[string]ag
 	return results, nil
 }
 
-// runWaveAgents executes a group of agents in parallel and waits for all of them.
+// buildWaves groups agents into ordered execution waves.
+// Delegates to buildWavesFromNodes using the scheduler's agent list.
+func (s *Scheduler) buildWaves() ([][]*agents.Agent, error) {
+	nodes := make([]agentNode, len(s.agents))
+	for i, a := range s.agents {
+		nodes[i] = a
+	}
+
+	nodeWaves, err := buildWavesFromNodes(nodes)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert [][]agentNode back to [][]*agents.Agent
+	waves := make([][]*agents.Agent, len(nodeWaves))
+	for i, wave := range nodeWaves {
+		waves[i] = make([]*agents.Agent, len(wave))
+		for j, n := range wave {
+			waves[i][j] = n.(*agents.Agent)
+		}
+	}
+	return waves, nil
+}
+
+// buildWavesFromNodes is the pure algorithm — works on agentNode interface.
+// Testable without a real agents.Agent. Uses Kahn's topological sort.
+func buildWavesFromNodes(nodes []agentNode) ([][]agentNode, error) {
+	inDegree := make(map[string]int, len(nodes))
+	dependents := make(map[string][]string, len(nodes))
+	byID := make(map[string]agentNode, len(nodes))
+
+	for _, n := range nodes {
+		byID[n.ID()] = n
+		inDegree[n.ID()] = len(n.DependsOn())
+		for _, dep := range n.DependsOn() {
+			dependents[dep] = append(dependents[dep], n.ID())
+		}
+	}
+
+	var waves [][]agentNode
+	placed := 0
+
+	for placed < len(nodes) {
+		var wave []agentNode
+		for _, n := range nodes {
+			if inDegree[n.ID()] == 0 {
+				wave = append(wave, n)
+			}
+		}
+
+		if len(wave) == 0 {
+			return nil, fmt.Errorf(
+				"cycle detected in agent dependencies — " +
+					"check your depends_on fields for circular references",
+			)
+		}
+
+		waves = append(waves, wave)
+		placed += len(wave)
+
+		for _, n := range wave {
+			inDegree[n.ID()] = -1
+			for _, depID := range dependents[n.ID()] {
+				inDegree[depID]--
+			}
+		}
+	}
+
+	return waves, nil
+}
+
+// validateGraph checks the scheduler's agent list for problems.
+func (s *Scheduler) validateGraph() error {
+	nodes := make([]agentNode, len(s.agents))
+	for i, a := range s.agents {
+		nodes[i] = a
+	}
+	return validateGraphNodes(nodes)
+}
+
+// validateGraphNodes is the pure validation algorithm — works on agentNode.
+// Checks for missing references and cycles using three-colour DFS.
+func validateGraphNodes(nodes []agentNode) error {
+	ids := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		ids[n.ID()] = true
+	}
+
+	for _, n := range nodes {
+		for _, dep := range n.DependsOn() {
+			if !ids[dep] {
+				return fmt.Errorf(
+					"agent %q depends_on %q but no agent with that id exists",
+					n.ID(), dep,
+				)
+			}
+		}
+	}
+
+	adj := make(map[string][]string, len(nodes))
+	for _, n := range nodes {
+		adj[n.ID()] = n.DependsOn()
+	}
+
+	const (
+		white, grey, black = 0, 1, 2
+	)
+	colour := make(map[string]int, len(nodes))
+	var path []string
+
+	var visit func(id string) []string
+	visit = func(id string) []string {
+		colour[id] = grey
+		path = append(path, id)
+
+		for _, dep := range adj[id] {
+			switch colour[dep] {
+			case grey:
+				cycleStart := -1
+				for i, p := range path {
+					if p == dep {
+						cycleStart = i
+						break
+					}
+				}
+				if cycleStart >= 0 {
+					return append(path[cycleStart:], dep)
+				}
+				return append(path, dep)
+			case white:
+				if cycle := visit(dep); cycle != nil {
+					return cycle
+				}
+			}
+		}
+
+		colour[id] = black
+		path = path[:len(path)-1]
+		return nil
+	}
+
+	for _, n := range nodes {
+		if colour[n.ID()] == white {
+			if cycle := visit(n.ID()); cycle != nil {
+				return fmt.Errorf(
+					"cycle detected in agent dependencies: %v\n"+
+						"  agents cannot form circular depends_on chains",
+					formatCycle(cycle),
+				)
+			}
+		}
+	}
+
+	return nil
+}
+
+// runWave executes a group of agents in parallel and waits for all of them.
 // Returns a map of results for every agent in this wave.
 // Returns an error if any agent in the wave fails — the caller decides
 // whether to abort or continue based on restart policy.
-func (s *Scheduler) runWaveAgents(
+func (s *Scheduler) runWave(
 	ctx context.Context,
-	waves []*agents.Agent,
+	wave []*agents.Agent,
 	defaultInput string,
 	previousResults map[string]agents.Result,
 ) (map[string]agents.Result, error) {
@@ -134,9 +298,9 @@ func (s *Scheduler) runWaveAgents(
 	// Collect results from all agents in this wave
 	// Using a mutex-protected map because multiple goroutines write to it
 	var mu sync.Mutex
-	waveResults := make(map[string]agents.Result, len(waves))
+	waveResults := make(map[string]agents.Result, len(wave))
 
-	for _, a := range waves {
+	for _, a := range wave {
 		wg.Add(1)
 
 		// Launch each agent concurrently
@@ -181,6 +345,8 @@ func (s *Scheduler) runWaveAgents(
 					"agent_id", ag.ID(),
 				)
 			}
+			// sends this to notify supervisor about the result
+			ag.Notify <- result
 		}(a)
 	}
 
@@ -236,193 +402,6 @@ func (s *Scheduler) resolveInput(
 	return combined
 }
 
-// buildWaveAgents groups agents into ordered execution waves using
-// a topological sort (Kahn's algorithm).
-//
-// Kahn's algorithm works like this:
-//  1. Find all agents with no dependencies — they form wave 1
-//  2. Remove those agents from the graph
-//  3. Find all agents whose dependencies are now all satisfied — wave 2
-//  4. Repeat until no agents remain
-//
-// If we run out of agents to place but some remain unplaced,
-// there is a cycle in the dependency graph — we return an error.
-func (s *Scheduler) buildWaveAgents() ([][]*agents.Agent, error) {
-	// Build a map of agentID → number of unsatisfied dependencies
-	// Agents with inDegree 0 are ready to run immediately
-	inDegree := make(map[string]int, len(s.agents))
-	// Build a map of agentID → agents that depend on it
-	// When an agent finishes, we use this to decrement its dependents' inDegree
-	dependents := make(map[string][]string, len(s.agents))
-	// Quick lookup from ID to Agent pointer
-	agentsByID := make(map[string]*agents.Agent, len(s.agents))
-
-	for _, agent := range s.agents {
-		agentsByID[agent.ID()] = agent
-		inDegree[agent.ID()] = len(agent.DependsOn())
-		for _, dep := range agent.DependsOn() {
-			dependents[dep] = append(dependents[dep], agent.ID())
-		}
-	}
-
-	var generalWaveAgents [][]*agents.Agent
-	placed := 0
-
-	for placed < len(s.agents) {
-		// Find all agents that are ready this round (inDegree == 0)
-		var waveAgents []*agents.Agent
-		for _, a := range s.agents {
-			if inDegree[a.ID()] == 0 {
-				waveAgents = append(waveAgents, a)
-			}
-		}
-
-		// No agents ready but some remain — cycle detected
-		if len(waveAgents) == 0 {
-			return nil, fmt.Errorf(
-				"cycle detected in agent dependencies — " +
-					"check your depends_on fields for circular references",
-			)
-		}
-
-		generalWaveAgents = append(generalWaveAgents, waveAgents)
-		placed += len(waveAgents)
-
-		// Remove wave agents from the graph by setting their inDegree
-		// to -1 (so they are not picked up in future rounds) and
-		// decrementing the inDegree of everything that depended on them
-		for _, a := range waveAgents {
-			inDegree[a.ID()] = -1 // mark as placed
-			for _, depID := range dependents[a.ID()] {
-				inDegree[depID]--
-			}
-		}
-	}
-
-	return generalWaveAgents, nil
-}
-
-// validateGraph checks for two problems before any agent runs:
-//  1. Missing references — depends_on names an agent that does not exist
-//  2. Cycles — a→b→a would cause the scheduler to wait forever
-//
-// Cycle detection uses DFS with three-colour marking — the standard algorithm
-// for finding cycles in a directed graph:
-//
-//	white (0) — not yet visited
-//	grey  (1) — currently being explored (on the DFS stack right now)
-//	black (2) — fully explored, no cycle through this node
-//
-// If we reach a grey node while exploring, we have found a cycle —
-// we are currently inside a path that leads back to a node we are
-// still processing. We record the path so the error message names
-// the exact agents involved.
-func (s *Scheduler) validateGraph() error {
-	ids := make(map[string]bool, len(s.agents))
-	for _, a := range s.agents {
-		ids[a.ID()] = true
-	}
-
-	// First pass — check all depends_on references point to real agents
-	for _, a := range s.agents {
-		for _, dep := range a.DependsOn() {
-			if !ids[dep] {
-				return fmt.Errorf(
-					"agent %q depends_on %q but no agent with that id exists",
-					a.ID(), dep,
-				)
-			}
-		}
-	}
-
-	// Build adjacency map for DFS: agentID → list of agents it depends on
-	adj := make(map[string][]string, len(s.agents))
-	for _, a := range s.agents {
-		adj[a.ID()] = a.DependsOn()
-	}
-
-	// Three-colour DFS state
-	const (
-		white = 0 // unvisited
-		grey  = 1 // on current DFS path — if we see this again, cycle found
-		black = 2 // fully explored — safe
-	)
-	colour := make(map[string]int, len(s.agents))
-
-	// path tracks the current DFS stack so we can name the cycle in the error
-	var path []string
-
-	// visit explores a node and all its dependencies recursively
-	// Returns the cycle path if one is found, nil otherwise
-	var visit func(id string) []string
-	visit = func(id string) []string {
-		colour[id] = grey
-		path = append(path, id)
-
-		for _, dep := range adj[id] {
-			switch colour[dep] {
-			case grey:
-				// We reached a node that is currently on our DFS stack —
-				// this is a cycle. Build the cycle description from the path.
-				// Find where the cycle starts in the path
-				cycleStart := -1
-				for i, p := range path {
-					if p == dep {
-						cycleStart = i
-						break
-					}
-				}
-				if cycleStart >= 0 {
-					return append(path[cycleStart:], dep) // e.g. [a, b, a]
-				}
-				return append(path, dep)
-
-			case white:
-				// Not yet visited — recurse
-				if cycle := visit(dep); cycle != nil {
-					return cycle
-				}
-			}
-			// black — already fully explored, known safe, skip
-		}
-
-		// Done exploring this node — mark black and remove from path
-		colour[id] = black
-		path = path[:len(path)-1]
-		return nil
-	}
-
-	// Run DFS from every unvisited node
-	// We need to start from every node because the graph may not be connected —
-	// there could be isolated groups of agents that never touch each other
-	for _, a := range s.agents {
-		if colour[a.ID()] == white {
-			if cycle := visit(a.ID()); cycle != nil {
-				return fmt.Errorf(
-					"cycle detected in agent dependencies: %v\n"+
-						"  agents cannot form circular depends_on chains",
-					formatCycle(cycle),
-				)
-			}
-		}
-	}
-
-	return nil
-}
-
-// formatCycle turns a cycle path like ["a", "b", "a"] into
-// a readable string like "a → b → a" for the error message.
-func formatCycle(cycle []string) string {
-	result := ""
-	for i, id := range cycle {
-		if i > 0 {
-			result += " → "
-		}
-		result += id
-	}
-	return result
-}
-
 // runIDFromContext extracts the run ID from the context if present.
 // Falls back to a placeholder if not set — the runtime always sets it.
 func runIDFromContext(ctx context.Context) string {
@@ -441,4 +420,17 @@ type runIDKey struct{}
 // Called by the runtime before passing ctx to the scheduler.
 func WithRunID(ctx context.Context, runID string) context.Context {
 	return context.WithValue(ctx, runIDKey{}, runID)
+}
+
+// formatCycle turns a cycle path like ["a", "b", "a"] into
+// a readable string like "a → b → a" for the error message.
+func formatCycle(cycle []string) string {
+	result := ""
+	for i, id := range cycle {
+		if i > 0 {
+			result += " → "
+		}
+		result += id
+	}
+	return result
 }
