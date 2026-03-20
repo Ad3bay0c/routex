@@ -1,0 +1,396 @@
+package routex
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/Ad3bay0c/routex/agents"
+	"github.com/Ad3bay0c/routex/llm"
+	"github.com/Ad3bay0c/routex/memory"
+	"github.com/Ad3bay0c/routex/tools"
+)
+
+// Config is the fully parsed and validated configuration for a Runtime.
+// It is built either by LoadConfig() from a YAML file,
+// or directly in Go code using NewRuntime(Config{...}).
+// Every field here maps to something in agents.yaml.
+type Config struct {
+	// Name is a human-readable label for this runtime instance.
+	// Shows up in logs and traces so you can tell crews apart.
+	Name string
+
+	// LLM holds the settings for the language model provider.
+	LLM llm.Config
+
+	// Agents is the list of agents in this crew, in definition order.
+	// The scheduler uses DependsOn to determine the actual run order.
+	Agents []agents.Config
+
+	// Memory holds the settings for the memory backend.
+	Memory MemoryConfig
+
+	// ToolConfigs holds the settings for each tool listed in agents.yaml.
+	// Used by the runtime to auto-instantiate built-in tools.
+	// Tools not found in the built-in registry must be registered manually.
+	ToolConfigs []tools.ToolConfig
+
+	// Task is the default task to run when StartAndRun() is called.
+	// Can be overridden at runtime via SetTask() or the ROUTEX_TASK env var.
+	Task Task
+
+	// Observability controls tracing and metrics.
+	Observability ObservabilityConfig
+
+	// LogLevel controls how verbose the runtime logs are.
+	// Valid values: "debug", "info", "warn", "error"
+	LogLevel string
+}
+
+// MemoryConfig holds settings for the memory backend.
+type MemoryConfig struct {
+	// Backend selects which store implementation to use.
+	// Valid values: "inmem", "redis"
+	Backend string
+
+	// TTL is the default time-to-live for stored values.
+	// Zero means values never expire.
+	TTL time.Duration
+
+	// RedisURL is only used when Backend is "redis".
+	// Example: "redis://localhost:6379"
+	// Read from env var REDIS_URL if not set directly.
+	RedisURL string
+}
+
+// ObservabilityConfig controls tracing and metrics export.
+type ObservabilityConfig struct {
+	// Tracing enables OpenTelemetry tracing when true.
+	// Every LLM call and tool execution gets a span.
+	Tracing bool
+
+	// Metrics enables Prometheus metrics when true.
+	// Exposes /metrics on the runtime's HTTP port.
+	Metrics bool
+
+	// JaegerEndpoint is where traces are sent.
+	// Example: "http://localhost:14268/api/traces"
+	// Defaults to the OTEL_EXPORTER_JAEGER_ENDPOINT env var.
+	JaegerEndpoint string
+}
+
+// yamlFile mirrors the structure of agents.yaml exactly.
+// We parse YAML into this first, then validate and convert
+// it into Config. Keeping them separate means Config stays
+// clean Go types while yamlFile can be messy raw strings.
+type yamlFile struct {
+	Runtime struct {
+		Name        string `yaml:"name"`
+		LLMProvider string `yaml:"llm_provider"`
+		Model       string `yaml:"model"`
+		APIKey      string `yaml:"api_key"`
+		LogLevel    string `yaml:"log_level"`
+	} `yaml:"runtime"`
+
+	Task struct {
+		Input       string `yaml:"input"`
+		OutputFile  string `yaml:"output_file"`
+		MaxDuration string `yaml:"max_duration"`
+	} `yaml:"task"`
+
+	Tools []struct {
+		Name       string            `yaml:"name"`
+		APIKey     string            `yaml:"api_key"`
+		BaseDir    string            `yaml:"base_dir"`
+		MaxResults int               `yaml:"max_results"`
+		Extra      map[string]string `yaml:"extra"`
+	} `yaml:"tools"`
+
+	Agents []struct {
+		ID         string   `yaml:"id"`
+		Role       string   `yaml:"role"`
+		Goal       string   `yaml:"goal"`
+		Tools      []string `yaml:"tools"`
+		DependsOn  []string `yaml:"depends_on"`
+		Restart    string   `yaml:"restart"`
+		MaxRetries int      `yaml:"max_retries"`
+		Timeout    string   `yaml:"timeout"`
+	} `yaml:"agents"`
+
+	Memory struct {
+		Backend  string `yaml:"backend"`
+		TTL      string `yaml:"ttl"`
+		RedisURL string `yaml:"redis_url"`
+	} `yaml:"memory"`
+
+	Observability struct {
+		Tracing        bool   `yaml:"tracing"`
+		Metrics        bool   `yaml:"metrics"`
+		JaegerEndpoint string `yaml:"jaeger_endpoint"`
+	} `yaml:"observability"`
+}
+
+// LoadConfig reads a YAML file from disk, parses it, validates every field,
+// and returns a Runtime ready to have tools registered and be started.
+//
+// Errors are returned early and clearly — if your agents.yaml has a typo
+// in a role name or references a tool that is not registered, you find out
+// here, before any goroutine starts or any API key is used.
+//
+// Usage:
+//
+//	rt, err := routex.LoadConfig("agents.yaml")
+//	if err != nil {
+//	    log.Fatal(err)  // tells you exactly what is wrong and where
+//	}
+func LoadConfig(path string) (*Runtime, error) {
+	// — read the file from disk
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("routex: cannot read config file %q: %w", path, err)
+	}
+
+	// — parse the raw YAML into our mirror struct
+	var raw yamlFile
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("routex: invalid YAML in %q: %w", path, err)
+	}
+
+	// — convert and validate into a clean Config
+	cfg, err := buildConfig(raw)
+	if err != nil {
+		return nil, fmt.Errorf("routex: config error in %q: %w", path, err)
+	}
+
+	// — build the Runtime from the validated config
+	return NewRuntime(cfg)
+}
+
+// buildConfig converts a raw yamlFile into a validated Config.
+// All validation lives here — invalid values produce clear error messages.
+func buildConfig(raw yamlFile) (Config, error) {
+	cfg := Config{}
+
+	// ── Runtime section ───────────────────────────────────────────
+
+	cfg.Name = raw.Runtime.Name
+	if cfg.Name == "" {
+		cfg.Name = "routex"
+	}
+
+	cfg.LogLevel = raw.Runtime.LogLevel
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = "info"
+	}
+
+	// ── LLM section ───────────────────────────────────────────────
+
+	cfg.LLM.Provider = raw.Runtime.LLMProvider
+	if cfg.LLM.Provider == "" {
+		return cfg, fmt.Errorf("runtime.llm_provider is required — valid values: anthropic, openai, ollama")
+	}
+
+	cfg.LLM.Model = raw.Runtime.Model
+	if cfg.LLM.Model == "" {
+		return cfg, fmt.Errorf("runtime.model is required — example: claude-sonnet-4-6")
+	}
+
+	// API key — support "env:VAR_NAME" syntax so keys never live in the file
+	cfg.LLM.APIKey = resolveEnvValue(raw.Runtime.APIKey)
+	if cfg.LLM.APIKey == "" && cfg.LLM.Provider != "ollama" {
+		return cfg, fmt.Errorf(
+			"runtime.api_key is required for provider %q\n"+
+				"  set it directly:   api_key: sk-ant-...\n"+
+				"  or via env var:    api_key: env:ANTHROPIC_API_KEY",
+			cfg.LLM.Provider,
+		)
+	}
+
+	// ── Task section ──────────────────────────────────────────────
+
+	// ROUTEX_TASK env var wins over the YAML value
+	taskInput := os.Getenv("ROUTEX_TASK")
+	if taskInput == "" {
+		taskInput = raw.Task.Input
+	}
+	cfg.Task.Input = taskInput
+	cfg.Task.OutputFile = raw.Task.OutputFile
+
+	if raw.Task.MaxDuration != "" {
+		d, err := time.ParseDuration(raw.Task.MaxDuration)
+		if err != nil {
+			return cfg, fmt.Errorf("task.max_duration %q is not a valid duration (example: 5m, 30s): %w",
+				raw.Task.MaxDuration, err)
+		}
+		cfg.Task.MaxDuration = d
+	}
+
+	// ── Tools section ─────────────────────────────────────────────
+	// Convert raw tool entries into ToolConfig structs.
+	// API keys support the "env:VAR_NAME" syntax just like the LLM key.
+	for _, t := range raw.Tools {
+		if t.Name == "" {
+			return cfg, fmt.Errorf("tools: every tool must have a name")
+		}
+		cfg.ToolConfigs = append(cfg.ToolConfigs, tools.ToolConfig{
+			Name:       t.Name,
+			APIKey:     resolveEnvValue(t.APIKey),
+			BaseDir:    t.BaseDir,
+			MaxResults: t.MaxResults,
+			Extra:      t.Extra,
+		})
+	}
+
+	// ── Agents section ────────────────────────────────────────────
+
+	if len(raw.Agents) == 0 {
+		return cfg, errors.New("at least one agent is required under agents")
+	}
+
+	seenIDs := make(map[string]bool)
+
+	for i, agent := range raw.Agents {
+		// ID must be present and unique
+		if agent.ID == "" {
+			return cfg, fmt.Errorf("agents[%d]: id is required", i)
+		}
+		if seenIDs[agent.ID] {
+			return cfg, fmt.Errorf("agents[%d]: duplicate agent id %q — every agent must have a unique id", i, agent.ID)
+		}
+		seenIDs[agent.ID] = true
+
+		// Role must be a known value
+		role := agents.Role(agent.Role)
+		if !role.IsValid() {
+			return cfg, fmt.Errorf(
+				"agents[%d] %q: unknown role %q — valid roles: planner, writer, critic, executor, researcher",
+				i, agent.ID, agent.Role,
+			)
+		}
+
+		// Goal is required — it becomes part of the agent's system prompt
+		if agent.Goal == "" {
+			return cfg, fmt.Errorf("agents[%d] %q: goal is required — describe what this agent should accomplish", i, agent.ID)
+		}
+
+		// Parse timeout duration
+		var timeout time.Duration
+		if agent.Timeout != "" {
+			d, err := time.ParseDuration(agent.Timeout)
+			if err != nil {
+				return cfg, fmt.Errorf("agents[%d] %q: timeout %q is not a valid duration (example: 60s): %w",
+					i, agent.ID, agent.Timeout, err)
+			}
+			timeout = d
+		}
+
+		// Parse restart policy
+		restart, err := agents.ParseRestartPolicy(agent.Restart)
+		if err != nil {
+			return cfg, fmt.Errorf("agents[%d] %q: %w", i, agent.ID, err)
+		}
+
+		cfg.Agents = append(cfg.Agents, agents.Config{
+			ID:         agent.ID,
+			Role:       role,
+			Goal:       agent.Goal,
+			Tools:      agent.Tools,
+			DependsOn:  agent.DependsOn,
+			MaxRetries: agent.MaxRetries,
+			Timeout:    timeout,
+			Restart:    restart,
+		})
+	}
+
+	// Validate depends_on references — every referenced ID must exist
+	for _, a := range cfg.Agents {
+		for _, dep := range a.DependsOn {
+			if !seenIDs[dep] {
+				return cfg, fmt.Errorf(
+					"agent %q depends_on %q but no agent with that id exists",
+					a.ID, dep,
+				)
+			}
+		}
+	}
+
+	// ── Memory section ────────────────────────────────────────────
+
+	cfg.Memory.Backend = raw.Memory.Backend
+	if cfg.Memory.Backend == "" {
+		cfg.Memory.Backend = "inmem" // safe default — no dependencies needed
+	}
+	if cfg.Memory.Backend != "inmem" && cfg.Memory.Backend != "redis" {
+		return cfg, fmt.Errorf(
+			"memory.backend %q is not valid — valid values: inmem, redis",
+			cfg.Memory.Backend,
+		)
+	}
+
+	if raw.Memory.TTL != "" {
+		d, err := time.ParseDuration(raw.Memory.TTL)
+		if err != nil {
+			return cfg, fmt.Errorf("memory.ttl %q is not a valid duration (example: 1h): %w",
+				raw.Memory.TTL, err)
+		}
+		cfg.Memory.TTL = d
+	}
+
+	// Redis URL — support env var fallback
+	cfg.Memory.RedisURL = resolveEnvValue(raw.Memory.RedisURL)
+	if cfg.Memory.Backend == "redis" && cfg.Memory.RedisURL == "" {
+		// fall back to REDIS_URL env var automatically
+		cfg.Memory.RedisURL = os.Getenv("REDIS_URL")
+	}
+	if cfg.Memory.Backend == "redis" && cfg.Memory.RedisURL == "" {
+		return cfg, fmt.Errorf(
+			"memory.backend is redis but no redis_url is set\n" +
+				"  set it in yaml:   redis_url: redis://localhost:6379\n" +
+				"  or via env var:   REDIS_URL=redis://localhost:6379",
+		)
+	}
+
+	// ── Observability section ─────────────────────────────────────
+
+	cfg.Observability.Tracing = raw.Observability.Tracing
+	cfg.Observability.Metrics = raw.Observability.Metrics
+	cfg.Observability.JaegerEndpoint = raw.Observability.JaegerEndpoint
+	if cfg.Observability.JaegerEndpoint == "" {
+		cfg.Observability.JaegerEndpoint = os.Getenv("OTEL_EXPORTER_JAEGER_ENDPOINT")
+	}
+
+	return cfg, nil
+}
+
+// resolveEnvValue handles the "env:VAR_NAME" syntax.
+// If value starts with "env:", it reads the named environment variable.
+// Otherwise it returns the value as-is.
+//
+// This lets you write:
+//
+//	api_key: env:ANTHROPIC_API_KEY   ← reads from environment
+//	api_key: sk-ant-hardcoded        ← uses the value directly (not recommended)
+func resolveEnvValue(value string) string {
+	if strings.HasPrefix(value, "env:") {
+		envVar := strings.TrimPrefix(value, "env:")
+		return os.Getenv(envVar)
+	}
+	return value
+}
+
+// buildMemoryStore creates the right MemoryStore implementation
+// based on the config. Called by NewRuntime().
+func buildMemoryStore(cfg MemoryConfig) (memory.Store, error) {
+	switch cfg.Backend {
+	case "inmem", "":
+		return memory.NewInMemStore(), nil
+	case "redis":
+		return memory.NewRedisStore(cfg.RedisURL, cfg.TTL)
+	default:
+		return nil, fmt.Errorf("unknown memory backend %q", cfg.Backend)
+	}
+}
