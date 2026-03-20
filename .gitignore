@@ -1,0 +1,39 @@
+# ── Binaries ────────────────────────────────────────────────
+# The compiled routex CLI and any example binaries
+routex
+research-crew
+*.exe
+*.out
+*.test
+
+# ── Environment & secrets ────────────────────────────────────
+# NEVER commit API keys. Use .env.example as the template.
+.env
+.env.local
+*.env.local
+
+# ── Build artifacts ──────────────────────────────────────────
+/dist/
+/bin/
+
+# ── Output files ─────────────────────────────────────────────
+# Files that agents write during a run — not source code
+report.md
+*.output
+
+# ── Go toolchain ─────────────────────────────────────────────
+# go.sum is generated — commit it when you have real dependencies
+# vendor/ is only needed if you vendor dependencies explicitly
+vendor/
+
+# ── IDE & editor files ───────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# ── Observability local data ─────────────────────────────────
+# Jaeger and Prometheus local storage if run via docker-compose
+jaeger-data/
+prometheus-data/
