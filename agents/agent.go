@@ -57,6 +57,10 @@ type Agent struct {
 	// The runtime reads from this channel after sending to Inbox.
 	output chan Result
 
+	// Notify is how supervisor knows an agent is done.
+	// the scheduler sends result after receiving output from agent
+	Notify chan Result
+
 	// logger is scoped to this agent — every log line includes the agent ID.
 	logger *slog.Logger
 }
@@ -74,10 +78,10 @@ type Message struct {
 	// For the critic: the writer's output (the draft).
 	Input string
 
-	// ctx carries the deadline and cancellation for this run.
+	// Ctx carries the deadline and cancellation for this run.
 	// When the runtime cancels ctx — timeout, user interrupt, upstream failure —
 	// the agent's LLM calls and tool executions are cancelled too.
-	ctx context.Context
+	Ctx context.Context
 }
 
 // Result is what the agent sends back through its output channel when done.
@@ -119,6 +123,7 @@ func New(
 		registry: registry,
 		Inbox:    make(chan Message, 1),
 		output:   make(chan Result, 1),
+		Notify:   make(chan Result, 1),
 		logger:   logger.With("agent_id", cfg.ID, "role", cfg.Role.String()),
 	}
 }
@@ -172,10 +177,10 @@ func (a *Agent) process(msg Message) Result {
 	// Apply the agent's timeout on top of the run context.
 	// If agent timeout is 60s and the run has 4 minutes left,
 	// this agent will be cancelled after 60s regardless.
-	ctx := msg.ctx
+	ctx := msg.Ctx
 	if a.cfg.Timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(msg.ctx, a.cfg.Timeout)
+		ctx, cancel = context.WithTimeout(ctx, a.cfg.Timeout)
 		defer cancel()
 	}
 

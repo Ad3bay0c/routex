@@ -134,7 +134,7 @@ func (s *Supervisor) monitor(ctx context.Context, errCh chan<- error) {
 		// the agent's own output channel and forwards into agentResults.
 		// This is the fan-in pattern — many sources, one destination.
 		go func(ag *agents.Agent) {
-			for result := range ag.Output() {
+			for result := range ag.Notify {
 				agentResults <- result
 			}
 		}(a)
