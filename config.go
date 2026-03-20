@@ -95,6 +95,7 @@ type yamlFile struct {
 		LLMProvider string `yaml:"llm_provider"`
 		Model       string `yaml:"model"`
 		APIKey      string `yaml:"api_key"`
+		BaseURL     string `yaml:"base_url"`
 		LogLevel    string `yaml:"log_level"`
 		EnvFile     string `yaml:"env_file"`
 	} `yaml:"runtime"`
@@ -113,16 +114,7 @@ type yamlFile struct {
 		Extra      map[string]string `yaml:"extra"`
 	} `yaml:"tools"`
 
-	Agents []struct {
-		ID         string   `yaml:"id"`
-		Role       string   `yaml:"role"`
-		Goal       string   `yaml:"goal"`
-		Tools      []string `yaml:"tools"`
-		DependsOn  []string `yaml:"depends_on"`
-		Restart    string   `yaml:"restart"`
-		MaxRetries int      `yaml:"max_retries"`
-		Timeout    string   `yaml:"timeout"`
-	} `yaml:"agents"`
+	Agents []agent `yaml:"agents"`
 
 	Memory struct {
 		Backend  string `yaml:"backend"`
@@ -135,6 +127,17 @@ type yamlFile struct {
 		Metrics        bool   `yaml:"metrics"`
 		JaegerEndpoint string `yaml:"jaeger_endpoint"`
 	} `yaml:"observability"`
+}
+
+type agent struct {
+	ID         string   `yaml:"id"`
+	Role       string   `yaml:"role"`
+	Goal       string   `yaml:"goal"`
+	Tools      []string `yaml:"tools"`
+	DependsOn  []string `yaml:"depends_on"`
+	Restart    string   `yaml:"restart"`
+	MaxRetries int      `yaml:"max_retries"`
+	Timeout    string   `yaml:"timeout"`
 }
 
 // LoadConfig reads a YAML file from disk, parses it, validates every field,
@@ -195,31 +198,21 @@ func buildConfig(raw yamlFile) (Config, error) {
 	cfg := Config{}
 
 	// ── Runtime section ───────────────────────────────────────────
-
-	cfg.Name = raw.Runtime.Name
-	if cfg.Name == "" {
-		cfg.Name = "routex"
-	}
-
-	cfg.LogLevel = raw.Runtime.LogLevel
-	if cfg.LogLevel == "" {
-		cfg.LogLevel = "info"
-	}
+	cfg.Name = envOr(raw.Runtime.Name, "routex")
+	cfg.LogLevel = envOr(raw.Runtime.LogLevel, "info")
 
 	// ── LLM section ───────────────────────────────────────────────
-
-	cfg.LLM.Provider = raw.Runtime.LLMProvider
+	cfg.LLM.Provider = env(raw.Runtime.LLMProvider)
 	if cfg.LLM.Provider == "" {
 		return cfg, fmt.Errorf("runtime.llm_provider is required — valid values: anthropic, openai, ollama")
 	}
 
-	cfg.LLM.Model = raw.Runtime.Model
+	cfg.LLM.Model = env(raw.Runtime.Model)
 	if cfg.LLM.Model == "" {
 		return cfg, fmt.Errorf("runtime.model is required — example: claude-sonnet-4-6")
 	}
 
-	// API key — support "env:VAR_NAME" syntax so keys never live in the file
-	cfg.LLM.APIKey = resolveEnvValue(raw.Runtime.APIKey)
+	cfg.LLM.APIKey = env(raw.Runtime.APIKey)
 	if cfg.LLM.APIKey == "" && cfg.LLM.Provider != "ollama" {
 		return cfg, fmt.Errorf(
 			"runtime.api_key is required for provider %q\n"+
@@ -229,18 +222,20 @@ func buildConfig(raw yamlFile) (Config, error) {
 		)
 	}
 
-	// ── Task section ──────────────────────────────────────────────
+	cfg.LLM.BaseURL = env(raw.Runtime.BaseURL)
 
+	// ── Task section ──────────────────────────────────────────────
 	// ROUTEX_TASK env var wins over the YAML value
+	// env() handles the "env:MY_TASK_VAR" case too
 	taskInput := os.Getenv("ROUTEX_TASK")
 	if taskInput == "" {
-		taskInput = raw.Task.Input
+		taskInput = env(raw.Task.Input)
 	}
 	cfg.Task.Input = taskInput
-	cfg.Task.OutputFile = raw.Task.OutputFile
+	cfg.Task.OutputFile = env(raw.Task.OutputFile)
 
 	if raw.Task.MaxDuration != "" {
-		d, err := time.ParseDuration(raw.Task.MaxDuration)
+		d, err := time.ParseDuration(env(raw.Task.MaxDuration))
 		if err != nil {
 			return cfg, fmt.Errorf("task.max_duration %q is not a valid duration (example: 5m, 30s): %w",
 				raw.Task.MaxDuration, err)
@@ -249,18 +244,21 @@ func buildConfig(raw yamlFile) (Config, error) {
 	}
 
 	// ── Tools section ─────────────────────────────────────────────
-	// Convert raw tool entries into ToolConfig structs.
-	// API keys support the "env:VAR_NAME" syntax just like the LLM key.
 	for _, t := range raw.Tools {
 		if t.Name == "" {
 			return cfg, fmt.Errorf("tools: every tool must have a name")
 		}
+		// Resolve env: in all tool string fields including extra values
+		resolvedExtra := make(map[string]string, len(t.Extra))
+		for k, v := range t.Extra {
+			resolvedExtra[k] = env(v)
+		}
 		cfg.ToolConfigs = append(cfg.ToolConfigs, tools.ToolConfig{
-			Name:       t.Name,
-			APIKey:     resolveEnvValue(t.APIKey),
-			BaseDir:    t.BaseDir,
+			Name:       env(t.Name),
+			APIKey:     env(t.APIKey),
+			BaseDir:    env(t.BaseDir),
 			MaxResults: t.MaxResults,
-			Extra:      t.Extra,
+			Extra:      resolvedExtra,
 		})
 	}
 
@@ -273,16 +271,17 @@ func buildConfig(raw yamlFile) (Config, error) {
 
 	for i, a := range raw.Agents {
 		// ID must be present and unique
-		if a.ID == "" {
+		id := env(a.ID)
+		if id == "" {
 			return cfg, fmt.Errorf("agents[%d]: id is required", i)
 		}
-		if seenIDs[a.ID] {
+		if seenIDs[id] {
 			return cfg, fmt.Errorf("agents[%d]: duplicate agent id %q — every agent must have a unique id", i, a.ID)
 		}
-		seenIDs[a.ID] = true
+		seenIDs[id] = true
 
 		// Role must be a known value
-		role := agents.Role(a.Role)
+		role := agents.Role(env(a.Role))
 		if !role.IsValid() {
 			return cfg, fmt.Errorf(
 				"agents[%d] %q: unknown role %q — valid roles: planner, writer, critic, executor, researcher",
@@ -291,14 +290,15 @@ func buildConfig(raw yamlFile) (Config, error) {
 		}
 
 		// Goal is required — it becomes part of the agent's system prompt
-		if a.Goal == "" {
+		goal := env(a.Goal)
+		if goal == "" {
 			return cfg, fmt.Errorf("agents[%d] %q: goal is required — describe what this agent should accomplish", i, a.ID)
 		}
 
 		// Parse timeout duration
 		var timeout time.Duration
 		if a.Timeout != "" {
-			d, err := time.ParseDuration(a.Timeout)
+			d, err := time.ParseDuration(env(a.Timeout))
 			if err != nil {
 				return cfg, fmt.Errorf("agents[%d] %q: timeout %q is not a valid duration (example: 60s): %w",
 					i, a.ID, a.Timeout, err)
@@ -307,15 +307,15 @@ func buildConfig(raw yamlFile) (Config, error) {
 		}
 
 		// Parse restart policy
-		restart, err := agents.ParseRestartPolicy(a.Restart)
+		restart, err := agents.ParseRestartPolicy(env(a.Restart))
 		if err != nil {
 			return cfg, fmt.Errorf("agents[%d] %q: %w", i, a.ID, err)
 		}
 
 		cfg.Agents = append(cfg.Agents, agents.Config{
-			ID:         a.ID,
+			ID:         id,
 			Role:       role,
-			Goal:       a.Goal,
+			Goal:       goal,
 			Tools:      a.Tools,
 			DependsOn:  a.DependsOn,
 			MaxRetries: a.MaxRetries,
@@ -337,10 +337,7 @@ func buildConfig(raw yamlFile) (Config, error) {
 	}
 
 	// ── Memory section ────────────────────────────────────────────
-	cfg.Memory.Backend = raw.Memory.Backend
-	if cfg.Memory.Backend == "" {
-		cfg.Memory.Backend = "inmem" // safe default — no dependencies needed
-	}
+	cfg.Memory.Backend = envOr(raw.Memory.Backend, "inmem")
 	if cfg.Memory.Backend != "inmem" && cfg.Memory.Backend != "redis" {
 		return cfg, fmt.Errorf(
 			"memory.backend %q is not valid — valid values: inmem, redis",
@@ -349,7 +346,7 @@ func buildConfig(raw yamlFile) (Config, error) {
 	}
 
 	if raw.Memory.TTL != "" {
-		d, err := time.ParseDuration(raw.Memory.TTL)
+		d, err := time.ParseDuration(env(raw.Memory.TTL))
 		if err != nil {
 			return cfg, fmt.Errorf("memory.ttl %q is not a valid duration (example: 1h): %w",
 				raw.Memory.TTL, err)
@@ -357,10 +354,10 @@ func buildConfig(raw yamlFile) (Config, error) {
 		cfg.Memory.TTL = d
 	}
 
-	// Redis URL — support env var fallback
-	cfg.Memory.RedisURL = resolveEnvValue(raw.Memory.RedisURL)
+	// Redis URL — env() handles "env:REDIS_URL", then fall back to
+	// the bare REDIS_URL env var for users who don't use the env: prefix
+	cfg.Memory.RedisURL = env(raw.Memory.RedisURL)
 	if cfg.Memory.Backend == "redis" && cfg.Memory.RedisURL == "" {
-		// fall back to REDIS_URL env var automatically
 		cfg.Memory.RedisURL = os.Getenv("REDIS_URL")
 	}
 	if cfg.Memory.Backend == "redis" && cfg.Memory.RedisURL == "" {
@@ -374,27 +371,20 @@ func buildConfig(raw yamlFile) (Config, error) {
 	// ── Observability section ─────────────────────────────────────
 	cfg.Observability.Tracing = raw.Observability.Tracing
 	cfg.Observability.Metrics = raw.Observability.Metrics
-	cfg.Observability.JaegerEndpoint = raw.Observability.JaegerEndpoint
-	if cfg.Observability.JaegerEndpoint == "" {
-		cfg.Observability.JaegerEndpoint = os.Getenv("OTEL_EXPORTER_JAEGER_ENDPOINT")
-	}
+	cfg.Observability.JaegerEndpoint = envOr(
+		raw.Observability.JaegerEndpoint,
+		os.Getenv("OTEL_EXPORTER_JAEGER_ENDPOINT"),
+	)
 
 	return cfg, nil
 }
 
-// resolveEnvValue handles the "env:VAR_NAME" syntax.
-// If value starts with "env:", it reads the named environment variable.
-// Otherwise it returns the value as-is.
-//
-// This lets you write:
-//
-//	api_key: env:ANTHROPIC_API_KEY   ← reads from environment
-//	api_key: sk-ant-hardcoded        ← uses the value directly (not recommended)
-//
 // loadEnvFile loads a .env file into the process environment.
 // Called at the very start of LoadConfig() before any env: references
 // are resolved — this is what makes "env:ANTHROPIC_API_KEY" work without
 // the user having to run `export` commands in their terminal.
+//
+// ── Development vs Production ─────────────────────────────────────
 //
 // DEVELOPMENT — use env_file to load a local .env file:
 //
@@ -496,12 +486,38 @@ func loadEnvFile(envFile, configPath string) error {
 	return nil
 }
 
-func resolveEnvValue(value string) string {
+// env resolves a YAML string value that may use the "env:VAR_NAME" syntax.
+//
+// Every string field in buildConfig passes through this function.
+// This means any YAML string value can use env: to read from the environment:
+//
+//	model:      "env:MY_MODEL"           → os.Getenv("MY_MODEL")
+//	api_key:    "env:ANTHROPIC_API_KEY"  → os.Getenv("ANTHROPIC_API_KEY")
+//	redis_url:  "env:REDIS_URL"          → os.Getenv("REDIS_URL")
+//	name:       "my-crew"                → "my-crew"  (no prefix — returned as-is)
+//
+// If the env var is not set, returns "".
+// Use envOr() when you need a fallback for missing values.
+func env(value string) string {
 	if strings.HasPrefix(value, "env:") {
-		envVar := strings.TrimPrefix(value, "env:")
-		return os.Getenv(envVar)
+		varName := strings.TrimPrefix(value, "env:")
+		return os.Getenv(varName)
 	}
 	return value
+}
+
+// envOr resolves a value with env() and returns fallback if the result is empty.
+// Use this for optional fields that have a sensible default.
+//
+// Example:
+//
+//	cfg.Name = envOr(raw.Runtime.Name, "routex")
+//	// → uses raw.Runtime.Name if set, "routex" if empty or env var is unset
+func envOr(value, fallback string) string {
+	if resolved := env(value); resolved != "" {
+		return resolved
+	}
+	return fallback
 }
 
 // buildMemoryStore creates the right MemoryStore implementation
