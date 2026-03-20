@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
 
 	"github.com/Ad3bay0c/routex/agents"
@@ -94,6 +96,7 @@ type yamlFile struct {
 		Model       string `yaml:"model"`
 		APIKey      string `yaml:"api_key"`
 		LogLevel    string `yaml:"log_level"`
+		EnvFile     string `yaml:"env_file"`
 	} `yaml:"runtime"`
 
 	Task struct {
@@ -154,7 +157,23 @@ func LoadConfig(path string) (*Runtime, error) {
 		return nil, fmt.Errorf("routex: cannot read config file %q: %w", path, err)
 	}
 
-	// — parse the raw YAML into our mirror struct
+	// — peek at env_file before full parsing.
+	// We do a minimal parse first so we can load the .env file
+	// before resolveEnvValue() runs on api_key and other env: references.
+	// Without this two-pass approach, "env:ANTHROPIC_API_KEY" resolves
+	// to "" because the variable has not been loaded into os.Environ yet.
+	var peek struct {
+		Runtime struct {
+			EnvFile string `yaml:"env_file"`
+		} `yaml:"runtime"`
+	}
+	if err := yaml.Unmarshal(data, &peek); err == nil {
+		if err := loadEnvFile(peek.Runtime.EnvFile, path); err != nil {
+			return nil, fmt.Errorf("routex: load env file: %w", err)
+		}
+	}
+
+	// — full YAML parse now that env vars are loaded into os.Environ
 	var raw yamlFile
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("routex: invalid YAML in %q: %w", path, err)
@@ -246,61 +265,60 @@ func buildConfig(raw yamlFile) (Config, error) {
 	}
 
 	// ── Agents section ────────────────────────────────────────────
-
 	if len(raw.Agents) == 0 {
-		return cfg, errors.New("at least one agent is required under agents")
+		return cfg, errors.New("at least one agent is required under agents: ")
 	}
 
 	seenIDs := make(map[string]bool)
 
-	for i, agent := range raw.Agents {
+	for i, a := range raw.Agents {
 		// ID must be present and unique
-		if agent.ID == "" {
+		if a.ID == "" {
 			return cfg, fmt.Errorf("agents[%d]: id is required", i)
 		}
-		if seenIDs[agent.ID] {
-			return cfg, fmt.Errorf("agents[%d]: duplicate agent id %q — every agent must have a unique id", i, agent.ID)
+		if seenIDs[a.ID] {
+			return cfg, fmt.Errorf("agents[%d]: duplicate agent id %q — every agent must have a unique id", i, a.ID)
 		}
-		seenIDs[agent.ID] = true
+		seenIDs[a.ID] = true
 
 		// Role must be a known value
-		role := agents.Role(agent.Role)
+		role := agents.Role(a.Role)
 		if !role.IsValid() {
 			return cfg, fmt.Errorf(
 				"agents[%d] %q: unknown role %q — valid roles: planner, writer, critic, executor, researcher",
-				i, agent.ID, agent.Role,
+				i, a.ID, a.Role,
 			)
 		}
 
 		// Goal is required — it becomes part of the agent's system prompt
-		if agent.Goal == "" {
-			return cfg, fmt.Errorf("agents[%d] %q: goal is required — describe what this agent should accomplish", i, agent.ID)
+		if a.Goal == "" {
+			return cfg, fmt.Errorf("agents[%d] %q: goal is required — describe what this agent should accomplish", i, a.ID)
 		}
 
 		// Parse timeout duration
 		var timeout time.Duration
-		if agent.Timeout != "" {
-			d, err := time.ParseDuration(agent.Timeout)
+		if a.Timeout != "" {
+			d, err := time.ParseDuration(a.Timeout)
 			if err != nil {
 				return cfg, fmt.Errorf("agents[%d] %q: timeout %q is not a valid duration (example: 60s): %w",
-					i, agent.ID, agent.Timeout, err)
+					i, a.ID, a.Timeout, err)
 			}
 			timeout = d
 		}
 
 		// Parse restart policy
-		restart, err := agents.ParseRestartPolicy(agent.Restart)
+		restart, err := agents.ParseRestartPolicy(a.Restart)
 		if err != nil {
-			return cfg, fmt.Errorf("agents[%d] %q: %w", i, agent.ID, err)
+			return cfg, fmt.Errorf("agents[%d] %q: %w", i, a.ID, err)
 		}
 
 		cfg.Agents = append(cfg.Agents, agents.Config{
-			ID:         agent.ID,
+			ID:         a.ID,
 			Role:       role,
-			Goal:       agent.Goal,
-			Tools:      agent.Tools,
-			DependsOn:  agent.DependsOn,
-			MaxRetries: agent.MaxRetries,
+			Goal:       a.Goal,
+			Tools:      a.Tools,
+			DependsOn:  a.DependsOn,
+			MaxRetries: a.MaxRetries,
 			Timeout:    timeout,
 			Restart:    restart,
 		})
@@ -319,7 +337,6 @@ func buildConfig(raw yamlFile) (Config, error) {
 	}
 
 	// ── Memory section ────────────────────────────────────────────
-
 	cfg.Memory.Backend = raw.Memory.Backend
 	if cfg.Memory.Backend == "" {
 		cfg.Memory.Backend = "inmem" // safe default — no dependencies needed
@@ -355,7 +372,6 @@ func buildConfig(raw yamlFile) (Config, error) {
 	}
 
 	// ── Observability section ─────────────────────────────────────
-
 	cfg.Observability.Tracing = raw.Observability.Tracing
 	cfg.Observability.Metrics = raw.Observability.Metrics
 	cfg.Observability.JaegerEndpoint = raw.Observability.JaegerEndpoint
@@ -374,6 +390,112 @@ func buildConfig(raw yamlFile) (Config, error) {
 //
 //	api_key: env:ANTHROPIC_API_KEY   ← reads from environment
 //	api_key: sk-ant-hardcoded        ← uses the value directly (not recommended)
+//
+// loadEnvFile loads a .env file into the process environment.
+// Called at the very start of LoadConfig() before any env: references
+// are resolved — this is what makes "env:ANTHROPIC_API_KEY" work without
+// the user having to run `export` commands in their terminal.
+//
+// DEVELOPMENT — use env_file to load a local .env file:
+//
+//	runtime:
+//	  env_file: "."          # loads .env next to agents.yaml
+//	  env_file: ".env.local" # or a named file
+//
+// PRODUCTION — omit env_file entirely. Never use .env files in production.
+// Inject secrets through your deployment platform instead:
+//   - Docker:      --env-file or -e flags, or Docker secrets
+//   - Kubernetes:  Secrets mounted as env vars or a secrets manager
+//   - AWS:         Parameter Store, Secrets Manager, or ECS task definitions
+//   - Fly.io:      fly secrets set KEY=value
+//   - Railway:     Dashboard environment variables
+//   - Heroku:      heroku config:set KEY=value
+//
+// .env files in production are a security risk — they can be accidentally
+// committed, leaked in logs, or exposed in container images.
+//
+// envFile behaviour:
+//
+//	""           — no env file loading (correct for production)
+//	"."          — loads .env from the config file's directory (development)
+//	".env.local" — loads a specific named file (development)
+//
+// Variables already set in the environment are never overwritten.
+// godotenv follows this convention — platform secrets always win over the file.
+func loadEnvFile(envFile, configPath string) error {
+	if envFile == "" {
+		// Not set — correct for production. Platform injects env vars directly.
+		return nil
+	}
+
+	// Resolve the config file's directory to an absolute path.
+	// This is the security boundary — the env file must stay inside it.
+	configDir, err := filepath.Abs(filepath.Dir(configPath))
+	if err != nil {
+		return fmt.Errorf("cannot resolve config directory: %w", err)
+	}
+
+	// Resolve the requested env file path.
+	var envPath string
+	if envFile == "." {
+		envPath = filepath.Join(configDir, ".env")
+	} else {
+		// filepath.Join + filepath.Clean together resolve any .. segments.
+		// e.g. "../.env" becomes the parent directory's .env before we check it.
+		envPath = filepath.Clean(filepath.Join(configDir, envFile))
+	}
+
+	// ── Path traversal check ──────────────────────────────────────
+	// Verify the resolved path is inside the config directory.
+	// filepath.Abs ensures both sides are canonical before comparing —
+	// symlinks are not resolved here intentionally (we check the path
+	// string, not the filesystem destination).
+	//
+	// Example of what this blocks:
+	//   configDir: /home/user/project
+	//   envFile:   "../.env"
+	//   envPath:   /home/user/.env   ← outside configDir — rejected
+	//
+	// We require the env file to be at or below the config file's directory.
+	// If you genuinely need a shared .env above the project, set the env
+	// vars in your shell or use your platform's secret management instead.
+	absEnvPath, err := filepath.Abs(envPath)
+	if err != nil {
+		return fmt.Errorf("cannot resolve env file path: %w", err)
+	}
+
+	// strings.HasPrefix on paths needs a trailing separator to avoid
+	// false positives: /home/userproject would match /home/user without it.
+	safeBase := configDir + string(filepath.Separator)
+	if absEnvPath != configDir && !strings.HasPrefix(absEnvPath, safeBase) {
+		return fmt.Errorf(
+			"env_file %q resolves to %q which is outside the config directory %q\n"+
+				"  env_file must point to a file inside the same directory as agents.yaml\n"+
+				"  if you need a shared env file, set variables in your shell instead",
+			envFile, absEnvPath, configDir,
+		)
+	}
+
+	// Load the file — godotenv.Load never overwrites existing env vars
+	// so platform-injected secrets always take precedence over the file.
+	err = godotenv.Load(absEnvPath)
+	if err != nil {
+		// File not found is a soft error for "." — developer may not have
+		// created their .env yet. For an explicit filename it is a hard error.
+		if envFile == "." && errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf(
+			"cannot load env file %q: %w\n"+
+				"  in development: create the file and add your keys\n"+
+				"  in production:  remove env_file from agents.yaml — use platform secrets instead",
+			absEnvPath, err,
+		)
+	}
+
+	return nil
+}
+
 func resolveEnvValue(value string) string {
 	if strings.HasPrefix(value, "env:") {
 		envVar := strings.TrimPrefix(value, "env:")

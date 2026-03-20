@@ -10,20 +10,28 @@
 #   go run .
 #
 # Override the task without editing this file:
-#   ROUTEX_TASK="Summarise the Go 1.26 release notes" go run .
+#   ROUTEX_TASK="Summarise the Go 1.24 release notes" go run .
 # ─────────────────────────────────────────────────────────────────
 
 runtime:
   name:         "research-crew"
   llm_provider: "anthropic"
   model:        "claude-sonnet-4-6"
-  api_key:      "env:ANTHROPIC_API_KEY"   # never hardcode keys
-  log_level:    "info"                     # debug | info | warn | error
+  api_key:      "env:ANTHROPIC_API_KEY"
+  log_level:    "info"
+
+  # env_file — DEVELOPMENT ONLY
+  # Loads a .env file so you don't need to export variables in your terminal.
+  # Remove this line in production — use your platform's secret management instead:
+  #   Docker / K8s: inject env vars via deployment config or secrets
+  #   Fly.io:       fly secrets set ANTHROPIC_API_KEY=...
+  #   Railway:      dashboard > environment variables
+  env_file: "."
 
 # ── Task ─────────────────────────────────────────────────────────
 # The default task. Override with ROUTEX_TASK env var at runtime.
 task:
-  input:        "Write a detailed report on the future of AI Agents in 2026"
+  input:        "Write a detailed report on the future of AI Agents in 2025"
   output_file:  "report.md"       # agents.yaml decides where output goes
   max_duration: "5m"              # entire crew must finish within 5 minutes
 
@@ -32,7 +40,7 @@ task:
 # Optional settings can be passed per tool.
 tools:
   - name: "web_search"             # no config needed — DuckDuckGo is free
-    max_results: 1                 # optional: how many results to return
+    max_results: 5                 # optional: how many results to return
 
   - name: "read_url"               # no config needed
 
