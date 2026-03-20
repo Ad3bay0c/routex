@@ -1,0 +1,92 @@
+# ─────────────────────────────────────────────────────────────────
+# Routex example — YAML-driven research crew
+#
+# This file is the entire configuration for a three-agent crew.
+# No Go code needed to change agents, tools, or the task.
+#
+# Run:
+#   cd examples/yaml-driven
+#   export ANTHROPIC_API_KEY=sk-ant-...
+#   go run .
+#
+# Override the task without editing this file:
+#   ROUTEX_TASK="Summarise the Go 1.26 release notes" go run .
+# ─────────────────────────────────────────────────────────────────
+
+runtime:
+  name:         "research-crew"
+  llm_provider: "anthropic"
+  model:        "claude-sonnet-4-6"
+  api_key:      "env:ANTHROPIC_API_KEY"   # never hardcode keys
+  log_level:    "info"                     # debug | info | warn | error
+
+# ── Task ─────────────────────────────────────────────────────────
+# The default task. Override with ROUTEX_TASK env var at runtime.
+task:
+  input:        "Write a detailed report on the future of AI Agents in 2026"
+  output_file:  "report.md"       # agents.yaml decides where output goes
+  max_duration: "5m"              # entire crew must finish within 5 minutes
+
+# ── Tools ─────────────────────────────────────────────────────────
+# Built-in tools are auto-registered — no rt.RegisterTool() needed.
+# Optional settings can be passed per tool.
+tools:
+  - name: "web_search"             # no config needed — DuckDuckGo is free
+    max_results: 1                 # optional: how many results to return
+
+  - name: "read_url"               # no config needed
+
+  - name: "write_file"
+    base_dir: "./outputs"          # optional: sandbox writes to this folder
+
+# When you add API-key tools later, they look like this:
+# tools:
+#   - name: "brave_search"
+#     api_key: "env:BRAVE_API_KEY"  # reads from environment
+
+# ── Agents ───────────────────────────────────────────────────────
+# Three agents in a linear pipeline: planner → writer → critic
+# Each agent waits for the previous one to finish before starting.
+agents:
+
+  - id:          "planner"
+    role:        "planner"
+    goal:        "Break the task into 3-5 clear, actionable research steps"
+    tools:       ["web_search"]
+    restart:     "one_for_one"   # if planner crashes, restart only the planner
+    max_retries: 3
+    timeout:     "60s"
+
+  - id:          "writer"
+    role:        "writer"
+    goal:        "Follow the plan and write a thorough, well-structured report"
+    tools:       ["web_search", "read_url", "write_file"]
+    depends_on:  ["planner"]     # writer waits for planner to finish
+    restart:     "one_for_one"
+    max_retries: 3
+    timeout:     "120s"
+
+  - id:          "critic"
+    role:        "critic"
+    goal:        "Review the report for quality, accuracy, and completeness. Score it out of 10."
+    tools:       ["write_file"]
+    depends_on:  ["writer"]      # critic waits for writer to finish
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+
+# ── Memory ───────────────────────────────────────────────────────
+memory:
+  backend: "inmem"    # change to "redis" for persistence across restarts
+  ttl:     "1h"       # how long agent memory lives
+
+# For Redis:
+# memory:
+#   backend:   "redis"
+#   redis_url: "env:REDIS_URL"
+#   ttl:       "2h"
+
+# ── Observability ────────────────────────────────────────────────
+observability:
+  tracing: false   # set to true and start Jaeger to see full traces
+  metrics: false   # set to true to expose Prometheus metrics
