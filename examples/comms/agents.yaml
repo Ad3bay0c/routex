@@ -1,0 +1,98 @@
+# ─────────────────────────────────────────────────────────────────
+# This crew:
+#   1. Reads a local data file (read_file)
+#   2. Fetches extra context from a REST API (http_request)
+#   3. Writes a report to disk (write_file)
+#   4. Emails the report to a recipient (send_email)
+#
+# Tools used:
+#   read_file     — no key needed
+#   http_request  — optional GITHUB_TOKEN for higher rate limits
+#   write_file    — no key needed
+#   send_email    — needs SENDGRID_API_KEY or RESEND_API_KEY
+#
+# Run:
+#   cp .env.example .env && fill in your keys
+#   echo "Go is great" > data/notes.txt
+#   go run .
+# ─────────────────────────────────────────────────────────────────
+
+runtime:
+  name:         "comms-crew"
+  llm_provider: "anthropic"
+  model:        "claude-sonnet-4-6"
+  api_key:      "env:ANTHROPIC_API_KEY"
+  log_level:    "info"
+  env_file:     "."   # DEVELOPMENT ONLY — remove in production
+
+task:
+  input:        "Summarise the latest Go releases and email a brief report"
+  output_file:  "outputs/report.md"
+  max_duration: "5m"
+
+tools:
+  # Read local files — sandboxed to ./data
+  - name:     "read_file"
+    base_dir: "./data"
+
+  # Make HTTP requests — default auth via GitHub token for higher rate limits
+  - name:    "http_request"
+    api_key: "env:GITHUB_TOKEN"           # sent as X-Api-Key
+    extra:
+      bearer_token: "env:GITHUB_TOKEN"   # also available as Bearer token
+      header_Accept:         "application/vnd.github+json"
+      header_X-GitHub-Api-Version: "2022-11-28"
+
+  # Save the report
+  - name:     "write_file"
+    base_dir: "./outputs"
+
+  # Send email via Resend (swap to sendgrid by changing provider + api_key)
+  - name:    "send_email"
+    api_key: "env:RESEND_API_KEY"
+    extra:
+      provider:   "resend"
+      from_email: "agent@yourdomain.com"
+      from_name:  "Routex Agent"
+
+  # Also include web_search in case researcher needs it
+  - name: "web_search"
+
+agents:
+
+  # 1. Researcher — fetches Go release info from GitHub API
+  - id:          "researcher"
+    role:        "researcher"
+    goal:        "Use http_request to fetch the latest 5 Go releases from https://api.github.com/repos/golang/go/releases?per_page=5 and extract key information from each release"
+    tools:       ["http_request"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+
+  # 2. Writer — compiles the research into a markdown report
+  - id:          "writer"
+    role:        "writer"
+    goal:        "Write a clear markdown report summarising the Go releases. Save it to 'report.md'"
+    tools:       ["write_file"]
+    depends_on:  ["researcher"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "90s"
+
+  # 3. Sender — emails the finished report
+  - id:          "sender"
+    role:        "executor"
+    goal:        "Read the report content and email it to 'recipient@example.com' with subject 'Latest Go Releases Report'. Send as plain text."
+    tools:       ["read_file", "send_email"]
+    depends_on:  ["writer"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+
+memory:
+  backend: "inmem"
+  ttl:     "1h"
+
+observability:
+  tracing: false
+  metrics: false
