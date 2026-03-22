@@ -163,8 +163,8 @@ func (t *ScrapeTool) Execute(ctx context.Context, input json.RawMessage) (json.R
 
 	// — strip HTML tags and clean whitespace
 	// ScrapingBee returns rendered HTML — we use the same helpers as read_url
-	text := tools.stripHTML(string(body))
-	text = tools.cleanWhitespace(text)
+	text := stripHTML(string(body))
+	text = cleanWhitespace(text)
 
 	truncated := false
 	if utf8.RuneCountInString(text) > maxChars {

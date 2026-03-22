@@ -20,6 +20,8 @@ import (
 	// Blank imports trigger each tool's init() function,
 	// registering their factories in the built-in registry.
 	// Remove any of these lines to exclude that tool from auto-discovery.
+	_ "github.com/Ad3bay0c/routex/tools/ai"
+	_ "github.com/Ad3bay0c/routex/tools/comms"
 	_ "github.com/Ad3bay0c/routex/tools/file"
 	_ "github.com/Ad3bay0c/routex/tools/search"
 	_ "github.com/Ad3bay0c/routex/tools/web"
@@ -60,7 +62,6 @@ type Runtime struct {
 // StartAndRun() when you are ready to run.
 func NewRuntime(cfg Config) (*Runtime, error) {
 	// Set up structured logger
-	// slog is Go's standard structured logging library (added in Go 1.21)
 	logLevel := parseLogLevel(cfg.LogLevel)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: logLevel,

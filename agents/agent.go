@@ -377,7 +377,7 @@ func (a *Agent) think(ctx context.Context, msg Message) (string, []tools.ToolCal
 			return resp.Content, toolCallLog, totalTokens, nil
 		}
 
-		// ── Case 3: empty response — should not happen but handle it ────
+		// ──────────── empty response — should not happen but handle it ────
 		// Some models return empty content with finish_reason "stop".
 		// Treat it as an error so the retry logic can kick in.
 		return "", toolCallLog, totalTokens, fmt.Errorf(

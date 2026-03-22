@@ -131,7 +131,7 @@ func (s *Supervisor) monitor(ctx context.Context, errCh chan<- error) {
 		}
 
 		// For each agent, launch a forwarder goroutine that reads from
-		// the agent's own output channel and forwards into agentResults.
+		// the agent's own notify channel and forwards into agentResults.
 		// This is the fan-in pattern — many sources, one destination.
 		go func(ag *agents.Agent) {
 			for result := range ag.Notify {
