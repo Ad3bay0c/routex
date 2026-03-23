@@ -73,6 +73,10 @@ type Message struct {
 
 	// Input is what this agent should work on.
 	Input string
+
+	// Note: context is NOT carried here — it flows through the agent's
+	// goroutine context set at Run() time, not through the message.
+	// Passing contexts through structs is a Go anti-pattern.
 }
 
 // Result is what the agent sends when it finishes processing a Message.
@@ -236,6 +240,27 @@ func (a *Agent) think(ctx context.Context, msg Message) (string, []tools.ToolCal
 
 	allowedSchemas := a.allowedToolSchemas()
 
+	// toolCallCounts tracks how many times each "tool:input" combination
+	// has been called in this thinking attempt.
+	// Key format: "toolName||inputJSON" — pipes chosen because they are
+	// unlikely to appear in tool names.
+	toolCallCounts := make(map[string]int)
+
+	// maxDuplicateCalls is how many times the same tool+input pair is
+	// allowed before we intervene. 2 allows one retry (sometimes useful
+	// for transient failures) but blocks infinite loops.
+	maxDuplicateCalls := a.cfg.MaxDuplicateToolCalls
+	if maxDuplicateCalls == 0 {
+		maxDuplicateCalls = 2
+	}
+
+	// maxTotalToolCalls is the absolute budget per thinking attempt.
+	// Prevents runaway agents even when each individual tool varies slightly.
+	maxTotalToolCalls := a.cfg.MaxTotalToolCalls
+	if maxTotalToolCalls == 0 {
+		maxTotalToolCalls = 20
+	}
+
 	// The thinking loop — keeps running until the LLM gives a text response
 	// or the context is cancelled (timeout / shutdown).
 	for {
@@ -267,7 +292,64 @@ func (a *Agent) think(ctx context.Context, msg Message) (string, []tools.ToolCal
 		if resp.ToolCall != nil {
 			tc := resp.ToolCall
 
-			a.logger.Info("tool call requested", "tool", tc.ToolName, "input", tc.Input)
+			// ── Total tool call budget check ──────────────────────
+			// Even with varied inputs, an agent that makes 20+ tool
+			// calls in one turn is stuck. Intervene with a clear message.
+			if len(toolCallLog) >= maxTotalToolCalls {
+				a.logger.Warn("total tool call budget exceeded — redirecting LLM to produce final answer",
+					"tool", tc.ToolName,
+					"total_calls", len(toolCallLog),
+				)
+				redirectMsg := fmt.Sprintf(
+					"You have made %d tool calls in this turn which exceeds the allowed budget. "+
+						"Stop making tool calls. Use the information already gathered in your history "+
+						"and produce your final answer now.",
+					len(toolCallLog),
+				)
+				_ = a.mem.Append(ctx, histKey, memory.Message{
+					Role:      "user",
+					Content:   redirectMsg,
+					Timestamp: time.Now(),
+				})
+				continue
+			}
+
+			// ── Duplicate tool call check ─────────────────────────
+			// Track how many times this exact tool+input pair has been called.
+			// Same tool with different input is fine — that is genuine exploration.
+			// Same tool with same input is a loop.
+			callKey := tc.ToolName + "||" + tc.Input
+			toolCallCounts[callKey]++
+			callCount := toolCallCounts[callKey]
+
+			if callCount > maxDuplicateCalls {
+				// Third or more identical call — the LLM is looping.
+				// Inject a redirect message instead of executing the tool.
+				// The message appears as a user turn so the LLM reads it
+				// on the next iteration and is forced to reconsider.
+				a.logger.Warn("duplicate tool call detected — redirecting LLM",
+					"tool", tc.ToolName,
+					"call_count", callCount,
+				)
+				redirectMsg := fmt.Sprintf(
+					"You have already called %q with the same input %d times. "+
+						"The results are already in your conversation history — do not call it again. "+
+						"Use the existing results and proceed to produce your final answer.",
+					tc.ToolName, callCount-1,
+				)
+				_ = a.mem.Append(ctx, histKey, memory.Message{
+					Role:      "user",
+					Content:   redirectMsg,
+					Timestamp: time.Now(),
+				})
+				continue
+			}
+
+			a.logger.Info("tool call requested",
+				"tool", tc.ToolName,
+				"input", tc.Input,
+				"call_count", callCount,
+			)
 
 			if err := a.mem.Append(ctx, histKey, memory.Message{
 				Role:      "assistant",

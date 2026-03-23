@@ -45,6 +45,16 @@ type Config struct {
 
 	// Restart is the policy that controls what happens when this agent fails.
 	Restart RestartPolicy
+
+	// MaxDuplicateToolCalls is how many times the same tool+input combination
+	// is allowed per thinking attempt before the agent is redirected.
+	// Defaults to 2 if zero — allows one retry but blocks infinite loops.
+	MaxDuplicateToolCalls int
+
+	// MaxTotalToolCalls is the absolute tool call budget per thinking attempt.
+	// Guards against runaway agents that vary inputs but still loop excessively.
+	// Defaults to 20 if zero.
+	MaxTotalToolCalls int
 }
 
 // RestartPolicy defines what the supervisor does when an agent crashes.

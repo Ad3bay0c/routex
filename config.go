@@ -130,14 +130,16 @@ type yamlFile struct {
 }
 
 type agent struct {
-	ID         string   `yaml:"id"`
-	Role       string   `yaml:"role"`
-	Goal       string   `yaml:"goal"`
-	Tools      []string `yaml:"tools"`
-	DependsOn  []string `yaml:"depends_on"`
-	Restart    string   `yaml:"restart"`
-	MaxRetries int      `yaml:"max_retries"`
-	Timeout    string   `yaml:"timeout"`
+	ID                    string   `yaml:"id"`
+	Role                  string   `yaml:"role"`
+	Goal                  string   `yaml:"goal"`
+	Tools                 []string `yaml:"tools"`
+	DependsOn             []string `yaml:"depends_on"`
+	Restart               string   `yaml:"restart"`
+	MaxRetries            int      `yaml:"max_retries"`
+	Timeout               string   `yaml:"timeout"`
+	MaxDuplicateToolCalls int      `yaml:"max_duplicate_tool_calls"`
+	MaxTotalToolCalls     int      `yaml:"max_total_tool_calls"`
 }
 
 // LoadConfig reads a YAML file from disk, parses it, validates every field,
@@ -313,14 +315,16 @@ func buildConfig(raw yamlFile) (Config, error) {
 		}
 
 		cfg.Agents = append(cfg.Agents, agents.Config{
-			ID:         id,
-			Role:       role,
-			Goal:       goal,
-			Tools:      a.Tools,
-			DependsOn:  a.DependsOn,
-			MaxRetries: a.MaxRetries,
-			Timeout:    timeout,
-			Restart:    restart,
+			ID:                    id,
+			Role:                  role,
+			Goal:                  goal,
+			Tools:                 a.Tools,
+			DependsOn:             a.DependsOn,
+			MaxRetries:            a.MaxRetries,
+			Timeout:               timeout,
+			Restart:               restart,
+			MaxDuplicateToolCalls: a.MaxDuplicateToolCalls,
+			MaxTotalToolCalls:     a.MaxTotalToolCalls,
 		})
 	}
 
