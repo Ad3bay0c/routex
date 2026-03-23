@@ -17,9 +17,9 @@ import (
 	"github.com/Ad3bay0c/routex/memory"
 	"github.com/Ad3bay0c/routex/tools"
 
-	// Blank imports trigger each tool's init() function,
-	// registering their factories in the built-in registry.
-	// Remove any of these lines to exclude that tool from auto-discovery.
+	// Blank imports trigger each sub-package's init() functions,
+	// registering their built-in tool factories automatically.
+	// Add a new line here whenever a new tool sub-package is created.
 	_ "github.com/Ad3bay0c/routex/tools/ai"
 	_ "github.com/Ad3bay0c/routex/tools/comms"
 	_ "github.com/Ad3bay0c/routex/tools/file"
@@ -211,33 +211,21 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		return fmt.Errorf("routex: no agents configured — add agents via YAML or AddAgent()")
 	}
 
-	// Build the scheduler — validates the dependency graph
-	rt.scheduler = scheduler.New(rt.agentList, rt.logger)
-
-	// Build the supervisor — watches for failures and applies restart policies
+	// Build the supervisor first — scheduler needs a reference to it
+	// so it can report failures and wait for restart decisions.
 	rt.supervisor = supervisor.New(
 		rt.agentList,
-		agents.OneForOne, // default policy — individual agents restart independently
+		agents.OneForOne, // default policy
 		3,                // max restarts per agent
 		time.Minute,      // restart window
 		rt.logger,
 	)
 
-	// Launch the supervisor — starts all agent goroutines
-	errCh := rt.supervisor.Start(ctx)
+	// Build the scheduler — passes the supervisor so the two cooperate on failures
+	rt.scheduler = scheduler.New(rt.agentList, rt.supervisor, rt.logger)
 
-	// Watch the supervisor's error channel in the background.
-	// If the supervisor gives up on an agent, we log it.
-	// The Run() call itself will surface the error to the caller.
-	go func() {
-		select {
-		case err := <-errCh:
-			if err != nil {
-				rt.logger.Error("supervisor permanent failure", "error", err)
-			}
-		case <-ctx.Done():
-		}
-	}()
+	// Launch the supervisor — starts all agent goroutines
+	rt.supervisor.Start(ctx)
 
 	rt.started = true
 	rt.logger.Info("runtime started", "agents", len(rt.agentList))
@@ -381,7 +369,7 @@ func (rt *Runtime) assembleResult(
 			Output:     ar.Output,
 			ToolCalls:  toolCalls,
 			TokensUsed: ar.TokensUsed,
-			Duration:   time.Since(ar.Duration),
+			Duration:   time.Since(ar.StartedAt),
 			Error:      ar.Err,
 		}
 
