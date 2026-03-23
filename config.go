@@ -140,6 +140,14 @@ type agent struct {
 	Timeout               string   `yaml:"timeout"`
 	MaxDuplicateToolCalls int      `yaml:"max_duplicate_tool_calls"`
 	MaxTotalToolCalls     int      `yaml:"max_total_tool_calls"`
+	// LLM is optional — when set, this agent uses its own provider/model
+	// instead of the runtime default.
+	LLM *struct {
+		Provider string `yaml:"provider"`
+		Model    string `yaml:"model"`
+		APIKey   string `yaml:"api_key"`
+		BaseURL  string `yaml:"base_url"`
+	} `yaml:"llm"`
 }
 
 // LoadConfig reads a YAML file from disk, parses it, validates every field,
@@ -287,7 +295,7 @@ func buildConfig(raw yamlFile) (Config, error) {
 		if !role.IsValid() {
 			return cfg, fmt.Errorf(
 				"agents[%d] %q: unknown role %q — valid roles: planner, writer, critic, executor, researcher",
-				i, a.ID, a.Role,
+				i, id, a.Role,
 			)
 		}
 
@@ -314,6 +322,42 @@ func buildConfig(raw yamlFile) (Config, error) {
 			return cfg, fmt.Errorf("agents[%d] %q: %w", i, a.ID, err)
 		}
 
+		// Parse optional per-agent LLM override.
+		// All fields go through env() so api_key: "env:MY_KEY" works here too.
+		var agentLLM *llm.Config
+		if a.LLM != nil {
+			provider := env(a.LLM.Provider)
+			model := env(a.LLM.Model)
+			apiKey := env(a.LLM.APIKey)
+			baseURL := env(a.LLM.BaseURL)
+
+			if provider == "" {
+				return cfg, fmt.Errorf(
+					"agents[%d] %q: llm.provider is required when llm: block is set",
+					i, a.ID,
+				)
+			}
+			if model == "" {
+				return cfg, fmt.Errorf(
+					"agents[%d] %q: llm.model is required when llm: block is set",
+					i, a.ID,
+				)
+			}
+			if apiKey == "" && provider != "ollama" {
+				return cfg, fmt.Errorf(
+					"agents[%d] %q: llm.api_key is required for provider %q",
+					i, a.ID, provider,
+				)
+			}
+
+			agentLLM = &llm.Config{
+				Provider: provider,
+				Model:    model,
+				APIKey:   apiKey,
+				BaseURL:  baseURL,
+			}
+		}
+
 		cfg.Agents = append(cfg.Agents, agents.Config{
 			ID:                    id,
 			Role:                  role,
@@ -325,6 +369,7 @@ func buildConfig(raw yamlFile) (Config, error) {
 			Restart:               restart,
 			MaxDuplicateToolCalls: a.MaxDuplicateToolCalls,
 			MaxTotalToolCalls:     a.MaxTotalToolCalls,
+			LLM:                   agentLLM,
 		})
 	}
 

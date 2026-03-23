@@ -3,6 +3,8 @@ package agents
 import (
 	"fmt"
 	"time"
+
+	"github.com/Ad3bay0c/routex/llm"
 )
 
 // Config holds the settings for a single agent.
@@ -55,6 +57,21 @@ type Config struct {
 	// Guards against runaway agents that vary inputs but still loop excessively.
 	// Defaults to 20 if zero.
 	MaxTotalToolCalls int
+
+	// LLM is an optional per-agent LLM configuration.
+	// When set, this agent uses its own LLM provider/model instead of
+	// the runtime default. This allows different agents in the same crew
+	// to use different models — e.g. a fast cheap model for research
+	// and a powerful model for final synthesis.
+	//
+	// Example agents.yaml:
+	//   llm:
+	//     provider: "openai"
+	//     model:    "gpt-4o"
+	//     api_key:  "env:OPENAI_API_KEY"
+	//
+	// Nil means use the runtime's default LLM adapter.
+	LLM *llm.Config
 }
 
 // RestartPolicy defines what the supervisor does when an agent crashes.

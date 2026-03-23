@@ -61,19 +61,16 @@ type Runtime struct {
 // NewRuntime does not start any goroutines — call Start() or
 // StartAndRun() when you are ready to run.
 func NewRuntime(cfg Config) (*Runtime, error) {
-	// Set up structured logger
 	logLevel := parseLogLevel(cfg.LogLevel)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: logLevel,
 	})).With("runtime", cfg.Name)
 
-	// Build the memory store from config
 	mem, err := buildMemoryStore(cfg.Memory)
 	if err != nil {
 		return nil, fmt.Errorf("routex: build memory store: %w", err)
 	}
 
-	// Build the LLM adapter from config
 	adapter, err := llm.New(cfg.LLM)
 	if err != nil {
 		return nil, fmt.Errorf("routex: build llm adapter: %w", err)
@@ -103,17 +100,13 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 // Usage:
 //
 //	rt.RegisterTool(tools.WebSearch())
-//	rt.RegisterTool(tools.WriteFile())
-//	rt.RegisterTool(&MyCustomTool{})
 func (rt *Runtime) RegisterTool(t tools.Tool) {
 	rt.registry.Register(t)
 	rt.logger.Info("tool registered", "name", t.Name())
 }
 
 // AddAgent adds an agent to the runtime programmatically.
-// Use this when building your runtime in Go code instead of YAML.
 // Must be called before Start() or StartAndRun().
-//
 // Usage:
 //
 //	rt.AddAgent(agents.Agent{
@@ -122,7 +115,14 @@ func (rt *Runtime) RegisterTool(t tools.Tool) {
 //	    Goal: "Break the task into clear steps",
 //	})
 func (rt *Runtime) AddAgent(cfg agents.Config) {
-	agent := agents.New(cfg, rt.adapter, rt.mem, rt.registry, rt.logger)
+	adapter, err := rt.resolveAgentAdapter(cfg)
+	if err != nil {
+		rt.logger.Warn("agent LLM config invalid, falling back to runtime default",
+			"agent_id", cfg.ID, "error", err,
+		)
+		adapter = rt.adapter
+	}
+	agent := agents.New(cfg, adapter, rt.mem, rt.registry, rt.logger)
 	rt.agentList = append(rt.agentList, agent)
 	rt.logger.Info("agent added", "id", cfg.ID, "role", cfg.Role.String())
 }
@@ -145,11 +145,8 @@ func (rt *Runtime) SetTask(t Task) {
 // instantiate each one from the built-in registry.
 // Tools already manually registered via RegisterTool() are skipped —
 // manual registration always wins over auto-discovery.
-// Returns an error only if a tool is listed in the YAML but is neither
-// a built-in nor manually registered — that is always a configuration mistake.
 func (rt *Runtime) autoRegisterTools() error {
 	for _, cfg := range rt.cfg.ToolConfigs {
-		// Already registered manually — skip, manual wins
 		if _, ok := rt.registry.Get(cfg.Name); ok {
 			rt.logger.Debug("tool already registered manually, skipping auto-discovery",
 				"tool", cfg.Name,
@@ -157,16 +154,10 @@ func (rt *Runtime) autoRegisterTools() error {
 			continue
 		}
 
-		// Try to resolve from built-in registry
 		tool, err := tools.Resolve(cfg.Name, cfg)
 		if err != nil {
-			// Not a built-in — check if it was manually registered
-			// under a different timing (e.g. registered after LoadConfig)
 			var notBuiltin tools.ErrToolNotBuiltin
 			if errors.As(err, &notBuiltin) {
-				// Not an error yet — the tool might be registered manually
-				// before Start() is called. We will catch missing tools
-				// inside allowedToolSchemas() when agents actually run.
 				rt.logger.Warn("tool listed in YAML is not a built-in — register it manually with rt.RegisterTool()",
 					"tool", cfg.Name,
 				)
@@ -193,16 +184,18 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	// Auto-register built-in tools listed in the YAML config.
-	// Must happen before agents are built so they can find their tools.
-	// Manually registered tools (via RegisterTool) are never overwritten.
 	if err := rt.autoRegisterTools(); err != nil {
 		return fmt.Errorf("routex: auto-register tools: %w", err)
 	}
 
-	// Build agents from config if none were added programmatically
+	// Build agents from config if none were added programmatically.
 	if len(rt.agentList) == 0 {
 		for _, cfg := range rt.cfg.Agents {
-			agent := agents.New(cfg, rt.adapter, rt.mem, rt.registry, rt.logger)
+			adapter, err := rt.resolveAgentAdapter(cfg)
+			if err != nil {
+				return fmt.Errorf("routex: agent %q LLM config: %w", cfg.ID, err)
+			}
+			agent := agents.New(cfg, adapter, rt.mem, rt.registry, rt.logger)
 			rt.agentList = append(rt.agentList, agent)
 		}
 	}
@@ -221,10 +214,10 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.logger,
 	)
 
-	// Build the scheduler — passes the supervisor so the two cooperate on failures
+	// Build the scheduler — passes the supervisor so the two cooperate on failures.
 	rt.scheduler = scheduler.New(rt.agentList, rt.supervisor, rt.logger)
 
-	// Launch the supervisor — starts all agent goroutines
+	// Launch the supervisor — starts all agent goroutines.
 	rt.supervisor.Start(ctx)
 
 	rt.started = true
@@ -235,19 +228,11 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 // Run dispatches a Task to the agent crew and waits for all agents
 // to complete. Returns the final Result.
-//
-// The scheduler determines agent execution order based on depends_on.
-// Agents without dependencies run immediately. Agents with dependencies
-// wait until their upstream agents have successfully completed.
-//
-// Run blocks until all agents finish or ctx is cancelled.
 func (rt *Runtime) Run(ctx context.Context, task Task) (Result, error) {
 	if !rt.started {
 		return Result{}, fmt.Errorf("routex: call Start() before Run()")
 	}
 
-	// Generate a unique run ID for this task execution.
-	// Used to namespace memory keys so parallel runs don't collide.
 	runID := uuid.New().String()
 	ctx = scheduler.WithRunID(ctx, runID)
 
@@ -258,14 +243,12 @@ func (rt *Runtime) Run(ctx context.Context, task Task) (Result, error) {
 
 	startTime := time.Now()
 
-	// Apply task-level timeout if set
 	if task.MaxDuration > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, task.MaxDuration)
 		defer cancel()
 	}
 
-	// Hand the task to the scheduler — it drives the whole execution
 	agentResults, err := rt.scheduler.Run(ctx, task.Input)
 	if err != nil {
 		return Result{
@@ -275,10 +258,8 @@ func (rt *Runtime) Run(ctx context.Context, task Task) (Result, error) {
 		}, err
 	}
 
-	// Assemble the final Result from all agent results
 	result := rt.assembleResult(runID, startTime, agentResults)
 
-	// Write output to file if configured
 	if task.OutputFile != "" {
 		if writeErr := os.WriteFile(task.OutputFile, []byte(result.Output), 0644); writeErr != nil {
 			rt.logger.Warn("failed to write output file",
@@ -301,13 +282,6 @@ func (rt *Runtime) Run(ctx context.Context, task Task) (Result, error) {
 
 // StartAndRun is a convenience method that calls Start() then Run()
 // using the task configured in agents.yaml (or set via SetTask()).
-//
-// This is the method most YAML-driven applications call — one line
-// from config to result.
-//
-// Usage:
-//
-//	result, err := rt.StartAndRun(ctx)
 func (rt *Runtime) StartAndRun(ctx context.Context) (Result, error) {
 	if err := rt.Start(ctx); err != nil {
 		return Result{}, err
@@ -316,15 +290,9 @@ func (rt *Runtime) StartAndRun(ctx context.Context) (Result, error) {
 }
 
 // Stop gracefully shuts down the runtime.
-// Cancels all running agent goroutines and closes the memory store.
-// Always call Stop() when you are done — even in tests.
-//
-// After Stop(), the Runtime cannot be restarted. Create a new one.
 func (rt *Runtime) Stop() {
 	rt.logger.Info("runtime stopping")
 
-	// Close the memory store — flushes any pending writes,
-	// closes Redis connections, frees resources
 	if rt.mem != nil {
 		if err := rt.mem.Close(); err != nil {
 			rt.logger.Warn("error closing memory store", "error", err)
@@ -336,8 +304,6 @@ func (rt *Runtime) Stop() {
 }
 
 // assembleResult builds the final Result from individual agent results.
-// It finds the output of the last agent in the execution chain,
-// sums up all token usage, and converts internal types to public types.
 func (rt *Runtime) assembleResult(
 	runID string,
 	startTime time.Time,
@@ -349,10 +315,7 @@ func (rt *Runtime) assembleResult(
 		Duration:     time.Since(startTime),
 	}
 
-	// Convert each agents.Result into the public AgentResult type
-	// and find the last agent's output to use as the final output
 	for id, ar := range agentResults {
-		// Convert tools.ToolCall slice to routex.ToolCall slice
 		toolCalls := make([]ToolCall, len(ar.ToolCalls))
 		for i, tc := range ar.ToolCalls {
 			toolCalls[i] = ToolCall{
@@ -376,18 +339,14 @@ func (rt *Runtime) assembleResult(
 		result.TokensUsed += ar.TokensUsed
 	}
 
-	// The final output is the output of the last agent in the chain.
-	// We find it by looking for the agent with no other agent depending on it.
 	result.Output = rt.findFinalOutput(agentResults)
 
 	return result
 }
 
-// findFinalOutput finds the output of the terminal agent in the crew —
-// the agent that no other agent depends on. In a linear chain
-// planner → writer → critic, the critic is the terminal agent.
+// findFinalOutput finds the output of the terminal agent —
+// the agent that no other agent depends on.
 func (rt *Runtime) findFinalOutput(agentResults map[string]agents.Result) string {
-	// Build a set of all agent IDs that are depended upon by someone
 	hasDependents := make(map[string]bool)
 	for _, a := range rt.agentList {
 		for _, dep := range a.DependsOn() {
@@ -395,8 +354,6 @@ func (rt *Runtime) findFinalOutput(agentResults map[string]agents.Result) string
 		}
 	}
 
-	// The terminal agent is one that nobody depends on
-	// In most crews there is exactly one — the last in the chain
 	for _, a := range rt.agentList {
 		if !hasDependents[a.ID()] {
 			if r, ok := agentResults[a.ID()]; ok {
@@ -408,8 +365,29 @@ func (rt *Runtime) findFinalOutput(agentResults map[string]agents.Result) string
 	return ""
 }
 
-// parseLogLevel converts a log level string to a slog.Level.
-// Defaults to Info for unknown values.
+// resolveAgentAdapter returns the LLM adapter for a given agent.
+// If the agent has its own LLM config, a new adapter is built from it.
+// Otherwise the runtime's default adapter is returned.
+func (rt *Runtime) resolveAgentAdapter(cfg agents.Config) (llm.Adapter, error) {
+	if cfg.LLM == nil {
+		return rt.adapter, nil
+	}
+
+	// Build a new adapter just for this agent
+	adapter, err := llm.New(*cfg.LLM)
+	if err != nil {
+		return nil, fmt.Errorf("build agent LLM adapter: %w", err)
+	}
+
+	rt.logger.Info("agent using dedicated LLM",
+		"agent_id", cfg.ID,
+		"provider", cfg.LLM.Provider,
+		"model", cfg.LLM.Model,
+	)
+
+	return adapter, nil
+}
+
 func parseLogLevel(level string) slog.Level {
 	switch level {
 	case "debug":
