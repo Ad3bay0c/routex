@@ -1,0 +1,91 @@
+runtime:
+  name:         "weather-compare"
+  llm_provider: "anthropic"
+  model:        "claude-sonnet-4-6"
+  api_key:      "env:ANTHROPIC_API_KEY"
+  log_level:    "info"
+  env_file:     "."
+  # base_url: "env:OPENAI_BASE_URL"   # override LLM endpoint (OpenAI-compatible APIs)
+
+task:
+  input:        "Compare the current weather in Lagos, Nigeria and London, UK"
+  output_file:  "env:WEATHER_OUTPUT_FILE"
+  max_duration: "3m"
+
+tools:
+  - name: "http_request"
+    extra:
+      # OpenWeatherMap sends the API key as a query param (?appid=KEY)
+      # not as a header. query_api_key + query_api_key_name handle this.
+      # The tool appends ?appid=KEY to every request automatically —
+      # the agent only needs to pass the base URL and its own params.
+      query_api_key:      "env:OPENWEATHER_API_KEY"
+      query_api_key_name: "appid"
+      # param_units ensures every request gets metric temperatures
+      # without the agent having to remember to include it each time.
+      param_units: "metric"
+
+  - name:     "write_file"
+    base_dir: "env:OUTPUT_DIR"
+
+agents:
+
+  - id:    "lagos_weather"
+    role:  "researcher"
+    goal:  >
+      Fetch the current weather for Lagos, Nigeria using the OpenWeatherMap API.
+      Make a GET request to https://api.openweathermap.org/data/2.5/weather
+      with params: {"q": "Lagos,NG"}.
+      The API key and units are already configured — do not add them yourself.
+      From the response extract and report: temperature (°C), feels_like (°C),
+      humidity (%), weather description, wind speed (m/s), and visibility (m).
+    tools:       ["http_request"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+    # depends_on:               []     # no dependencies — runs in wave 1
+    # max_duplicate_tool_calls: 2      # default: 2
+    # max_total_tool_calls:     20     # default: 20
+
+  - id:    "london_weather"
+    role:  "researcher"
+    goal:  >
+      Fetch the current weather for London, UK using the OpenWeatherMap API.
+      Make a GET request to https://api.openweathermap.org/data/2.5/weather
+      with params: {"q": "London,GB"}.
+      The API key and units are already configured — do not add them yourself.
+      From the response extract and report: temperature (°C), feels_like (°C),
+      humidity (%), weather description, wind speed (m/s), and visibility (m).
+    tools:       ["http_request"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+    # depends_on:               []     # no dependencies — runs in wave 1
+    # max_duplicate_tool_calls: 2      # default: 2
+    # max_total_tool_calls:     20     # default: 20
+
+  - id:    "comparator"
+    role:  "writer"
+    goal:  >
+      You have the current weather data for both Lagos and London.
+      Write a markdown report comparing the two cities side by side.
+      Include a table with: temperature, feels like, humidity, conditions,
+      wind speed, and visibility. Add a short paragraph summarising which
+      city has better weather today and why. Save the report as 'weather_report.md'.
+    tools:       ["write_file"]
+    depends_on:  ["lagos_weather", "london_weather"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "90s"
+    # max_duplicate_tool_calls: 2      # default: 2
+    # max_total_tool_calls:     20     # default: 20
+
+memory:
+  backend: "inmem"
+  ttl:     "30m"
+  # redis_url: "env:REDIS_URL"         # required when backend is "redis"
+
+observability:
+  tracing: false
+  metrics: false
+  # jaeger_endpoint: "env:OTEL_EXPORTER_JAEGER_ENDPOINT"  # required when tracing is true

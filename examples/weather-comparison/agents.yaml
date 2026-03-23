@@ -1,0 +1,66 @@
+runtime:
+  name:         "weather-compare"
+  llm_provider: "anthropic"
+  model:        "claude-sonnet-4-6"
+  api_key:      "env:ANTHROPIC_API_KEY"
+  log_level:    "info"
+  env_file:     "."
+  # base_url: "env:OPENAI_BASE_URL"   # override LLM endpoint (OpenAI-compatible APIs)
+
+task:
+  input:        "Compare the current weather in Lagos, Nigeria and London, UK"
+  output_file:  "env:WEATHER_OUTPUT_FILE"
+  max_duration: "3m"
+
+tools:
+  - name:        "brave_search"
+    api_key:     "env:BRAVE_API_KEY"
+    max_results: 3
+
+  - name:        "write_file"
+    base_dir:    "env:OUTPUT_DIR"
+
+agents:
+
+  - id:          "lagos_weather"
+    role:        "researcher"
+    goal:        "Search for the current weather conditions in Lagos, Nigeria today (March 23rd, 2026). Find temperature, humidity, conditions (sunny/cloudy/rainy), and any notable weather alerts."
+    tools:       ["brave_search"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+    # depends_on:              []              # list of agent IDs that must complete first
+    # max_duplicate_tool_calls: 2              # how many times the same tool+input is allowed before redirect (default: 2)
+    # max_total_tool_calls:     20             # absolute tool call budget per attempt (default: 20)
+
+  - id:          "london_weather"
+    role:        "researcher"
+    goal:        "Search for the current weather conditions in London, UK today (March 23rd, 2026). Find temperature, humidity, conditions (sunny/cloudy/rainy), and any notable weather alerts."
+    tools:       ["brave_search"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+    # depends_on:               []             # list of agent IDs that must complete first
+    # max_duplicate_tool_calls: 2              # how many times the same tool+input is allowed before redirect (default: 2)
+    # max_total_tool_calls:     20             # absolute tool call budget per attempt (default: 20)
+
+  - id:          "comparator"
+    role:        "writer"
+    goal:        "Compare the weather in Lagos and London side by side. Write a clear markdown report covering: current temperature (convert between Celsius and Fahrenheit), humidity, sky conditions, and a short summary of which city has better weather today and why. Save the report to 'weather_report.md'."
+    tools:       ["write_file"]
+    depends_on:  ["lagos_weather", "london_weather"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "90s"
+    # max_duplicate_tool_calls: 2              # how many times the same tool+input is allowed before redirect (default: 2)
+    # max_total_tool_calls:     20             # absolute tool call budget per attempt (default: 20)
+
+memory:
+  backend: "inmem"
+  ttl:     "30m"
+  # redis_url: "env:REDIS_URL"                # required when backend is "redis"
+
+observability:
+  tracing: false
+  metrics: false
+  # jaeger_endpoint: "env:OTEL_EXPORTER_JAEGER_ENDPOINT"   # required when tracing is true

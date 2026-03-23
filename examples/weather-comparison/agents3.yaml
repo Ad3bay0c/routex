@@ -1,0 +1,113 @@
+runtime:
+  name:         "weather-compare"
+  llm_provider: "anthropic"
+  model:        "claude-haiku-4-5-20251001"
+  api_key:      "env:ANTHROPIC_API_KEY"
+  log_level:    "info"
+  env_file:     "."
+  # base_url: "env:OPENAI_BASE_URL"   # override LLM endpoint (OpenAI-compatible APIs)
+
+task:
+  input:        "Compare the current weather in Lagos, Nigeria and London, UK"
+  output_file:  "env:WEATHER_OUTPUT_FILE"
+  max_duration: "5m"
+
+tools:
+  - name: "http_request"
+    extra:
+      query_api_key:      "env:OPENWEATHER_API_KEY"
+      query_api_key_name: "appid"
+      param_units:        "metric"
+
+  - name:     "write_file"
+    base_dir: "env:OUTPUT_DIR"
+
+agents:
+
+  - id:    "lagos_weather"
+    role:  "researcher"
+    goal:  >
+      Fetch the current weather for Lagos, Nigeria using the OpenWeatherMap API.
+      Make a GET request to https://api.openweathermap.org/data/2.5/weather
+      with params: {"q": "Lagos,NG"}.
+      The API key and units are already configured — do not add them yourself.
+      From the response extract and report: temperature (°C), feels_like (°C),
+      humidity (%), weather description, wind speed (m/s), and visibility (m).
+    tools:       ["http_request"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+    # depends_on:               []     # no dependencies — runs in wave 1
+    # max_duplicate_tool_calls: 2      # default: 2
+    max_total_tool_calls:     2     # default: 20
+
+  - id:    "london_weather"
+    role:  "researcher"
+    goal:  >
+      Fetch the current weather for London, UK using the OpenWeatherMap API.
+      Make a GET request to https://api.openweathermap.org/data/2.5/weather
+      with params: {"q": "London,GB"}.
+      The API key and units are already configured — do not add them yourself.
+      From the response extract and report: temperature (°C), feels_like (°C),
+      humidity (%), weather description, wind speed (m/s), and visibility (m).
+    tools:       ["http_request"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+    # depends_on:               []     # no dependencies — runs in wave 1
+    # max_duplicate_tool_calls: 2      # default: 2
+    max_total_tool_calls:     2     # default: 20
+
+  # Uses GPT-4o to compare. Does NOT write a file — pure comparison text only.
+  - id:    "comparator"
+    role:  "writer"
+    goal:  >
+      You have the current weather data for both Lagos and London.
+      Produce a structured markdown comparison of the two cities — do NOT write
+      it to a file, just return the content as your final response.
+      Include: a side-by-side table with temperature, feels like, humidity,
+      conditions, wind speed and visibility, then a short paragraph explaining
+      which city has better weather today and why.
+    tools:      []
+    depends_on: ["lagos_weather", "london_weather"]
+    restart:    "one_for_one"
+    max_retries: 2
+    timeout:    "90s"
+    # max_duplicate_tool_calls: 2      # default: 2
+    # max_total_tool_calls:     20     # default: 20
+    llm:
+      provider: "openai"
+      model:    "gpt-4o"
+      api_key:  "env:OPENAI_API_KEY"
+      # base_url: "env:OPENAI_BASE_URL"  # override for OpenAI-compatible endpoints
+
+  # Uses Anthropic (runtime default) — inherits claude-haiku-4-5-20251001
+  - id:    "fact_checker"
+    role:  "critic"
+    goal:  >
+      You have received a weather comparison report between Lagos and London.
+      Fact-check it carefully:
+        - Are the temperature values realistic for both cities at this time of year?
+        - Are the humidity and wind speed values physically plausible?
+        - Are the weather descriptions consistent with the numeric values?
+        - Is the final conclusion (which city has better weather) logically supported?
+      Correct any inconsistencies, flag anything that looks like a hallucination,
+      and produce a final verified markdown report. Save it as 'weather_report.md'.
+    tools:      ["write_file"]
+    depends_on: ["comparator"]
+    restart:    "one_for_one"
+    max_retries: 2
+    timeout:    "90s"
+    # max_duplicate_tool_calls: 2      # default: 2
+    # max_total_tool_calls:     20     # default: 20
+    # llm: not set — inherits runtime default (claude-haiku-4-5-20251001)
+
+memory:
+  backend: "inmem"
+  ttl:     "30m"
+  # redis_url: "env:REDIS_URL"         # required when backend is "redis"
+
+observability:
+  tracing: false
+  metrics: false
+  # jaeger_endpoint: "env:OTEL_EXPORTER_JAEGER_ENDPOINT"  # required when tracing is true
