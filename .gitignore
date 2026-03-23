@@ -37,3 +37,4 @@ vendor/
 # Jaeger and Prometheus local storage if run via docker-compose
 jaeger-data/
 prometheus-data/
+**/outputs/**
