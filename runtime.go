@@ -15,6 +15,7 @@ import (
 	"github.com/Ad3bay0c/routex/internal/supervisor"
 	"github.com/Ad3bay0c/routex/llm"
 	"github.com/Ad3bay0c/routex/memory"
+	"github.com/Ad3bay0c/routex/observe"
 	"github.com/Ad3bay0c/routex/tools"
 
 	// Blank imports trigger each sub-package's init() functions,
@@ -52,6 +53,10 @@ type Runtime struct {
 	logger     *slog.Logger
 	task       Task
 	started    bool
+
+	// Observability — both are nil-safe no-ops when disabled
+	tracer  *observe.Tracer
+	metrics *observe.Metrics
 }
 
 // NewRuntime creates a Runtime from a validated Config.
@@ -82,6 +87,40 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		"memory", cfg.Memory.Backend,
 	)
 
+	ctx := context.Background()
+
+	tracer := observe.NewNoopTracer()
+	if cfg.Observability.Tracing {
+		t, err := observe.NewTracer(ctx, cfg.Name, cfg.Observability.JaegerEndpoint)
+		if err != nil {
+			logger.Warn("tracing disabled — could not connect to endpoint",
+				"endpoint", cfg.Observability.JaegerEndpoint,
+				"error", err,
+			)
+		} else {
+			tracer = t
+			logger.Info("tracing enabled", "endpoint", cfg.Observability.JaegerEndpoint)
+		}
+	}
+
+	metrics := observe.NewNoopMetrics()
+	if cfg.Observability.Metrics {
+		addr := cfg.Observability.MetricsAddr
+		if addr == "" {
+			addr = ":9090"
+		}
+		m, err := observe.NewMetrics(cfg.Name, addr)
+		if err != nil {
+			logger.Warn("metrics disabled — could not start server",
+				"addr", addr,
+				"error", err,
+			)
+		} else {
+			metrics = m
+			logger.Info("metrics enabled", "addr", addr+"/metrics")
+		}
+	}
+
 	return &Runtime{
 		cfg:      cfg,
 		registry: tools.NewRegistry(),
@@ -89,6 +128,8 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		adapter:  adapter,
 		logger:   logger,
 		task:     cfg.Task,
+		tracer:   tracer,
+		metrics:  metrics,
 	}, nil
 }
 
@@ -109,7 +150,7 @@ func (rt *Runtime) AddAgent(cfg agents.Config) {
 		)
 		adapter = rt.adapter
 	}
-	agent := agents.New(cfg, adapter, rt.mem, rt.registry, rt.logger)
+	agent := agents.New(cfg, adapter, rt.mem, rt.registry, rt.logger, rt.tracer, rt.metrics)
 	rt.agentList = append(rt.agentList, agent)
 	rt.logger.Info("agent added", "id", cfg.ID, "role", cfg.Role.String())
 }
@@ -253,7 +294,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("routex: agent %q LLM config: %w", cfg.ID, err)
 			}
-			agent := agents.New(cfg, adapter, rt.mem, rt.registry, rt.logger)
+			agent := agents.New(cfg, adapter, rt.mem, rt.registry, rt.logger, rt.tracer, rt.metrics)
 			rt.agentList = append(rt.agentList, agent)
 		}
 	}
@@ -307,13 +348,20 @@ func (rt *Runtime) Run(ctx context.Context, task Task) (Result, error) {
 		defer cancel()
 	}
 
-	agentResults, err := rt.scheduler.Run(ctx, task.Input)
-	if err != nil {
+	// Start a root trace span covering the entire run.
+	ctx, finishTrace := rt.tracer.StartRun(ctx, runID, task.Input)
+
+	agentResults, runErr := rt.scheduler.Run(ctx, task.Input)
+
+	// Finish the root span
+	finishTrace(runErr)
+
+	if runErr != nil {
 		return Result{
-			Error:    err,
+			Error:    runErr,
 			Duration: time.Since(startTime),
 			TraceID:  runID,
-		}, err
+		}, runErr
 	}
 
 	result := rt.assembleResult(runID, startTime, agentResults)
@@ -329,9 +377,14 @@ func (rt *Runtime) Run(ctx context.Context, task Task) (Result, error) {
 		}
 	}
 
+	elapsed := time.Since(startTime)
+
+	// Record crew-level metrics
+	rt.metrics.RecordRun(rt.cfg.Name, elapsed)
+
 	rt.logger.Info("run complete",
 		"run_id", runID,
-		"duration", time.Since(startTime),
+		"duration", elapsed,
 		"tokens", result.TokensUsed,
 	)
 
@@ -350,6 +403,18 @@ func (rt *Runtime) StartAndRun(ctx context.Context) (Result, error) {
 // Stop gracefully shuts down the runtime.
 func (rt *Runtime) Stop() {
 	rt.logger.Info("runtime stopping")
+
+	ctx := context.Background()
+
+	// Flush and close the tracer — ensures no spans are lost
+	if err := rt.tracer.Shutdown(ctx); err != nil {
+		rt.logger.Warn("tracer shutdown error", "error", err)
+	}
+
+	// Stop the metrics HTTP server
+	if err := rt.metrics.Shutdown(ctx); err != nil {
+		rt.logger.Warn("metrics shutdown error", "error", err)
+	}
 
 	if rt.mem != nil {
 		if err := rt.mem.Close(); err != nil {

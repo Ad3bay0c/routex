@@ -76,13 +76,17 @@ type ObservabilityConfig struct {
 	Tracing bool
 
 	// Metrics enables Prometheus metrics when true.
-	// Exposes /metrics on the runtime's HTTP port.
+	// Exposes /metrics on MetricsAddr (default :9090).
 	Metrics bool
 
-	// JaegerEndpoint is where traces are sent.
-	// Example: "http://localhost:14268/api/traces"
-	// Defaults to the OTEL_EXPORTER_JAEGER_ENDPOINT env var.
+	// JaegerEndpoint is the OTLP HTTP endpoint for traces.
+	// Example: "http://localhost:4318"
+	// Defaults to the OTEL_EXPORTER_OTLP_ENDPOINT env var.
 	JaegerEndpoint string
+
+	// MetricsAddr is the address to serve /metrics on.
+	// Default: ":9090". Example: ":2112"
+	MetricsAddr string
 }
 
 // yamlFile mirrors the structure of agents.yaml exactly.
@@ -126,6 +130,7 @@ type yamlFile struct {
 		Tracing        bool   `yaml:"tracing"`
 		Metrics        bool   `yaml:"metrics"`
 		JaegerEndpoint string `yaml:"jaeger_endpoint"`
+		MetricsAddr    string `yaml:"metrics_addr"`
 	} `yaml:"observability"`
 }
 
@@ -471,7 +476,11 @@ func buildConfig(raw yamlFile) (Config, error) {
 	cfg.Observability.Metrics = raw.Observability.Metrics
 	cfg.Observability.JaegerEndpoint = envOr(
 		raw.Observability.JaegerEndpoint,
-		os.Getenv("OTEL_EXPORTER_JAEGER_ENDPOINT"),
+		os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+	)
+	cfg.Observability.MetricsAddr = envOr(
+		raw.Observability.MetricsAddr,
+		os.Getenv("ROUTEX_METRICS_ADDR"),
 	)
 
 	return cfg, nil
