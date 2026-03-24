@@ -94,12 +94,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 // RegisterTool makes a tool available to agents.
 // Must be called before Start() or StartAndRun().
-// Tools listed in agents.yaml but not registered here will be
-// silently skipped by agents — register all tools you intend to use.
-//
-// Usage:
-//
-//	rt.RegisterTool(tools.WebSearch())
 func (rt *Runtime) RegisterTool(t tools.Tool) {
 	rt.registry.Register(t)
 	rt.logger.Info("tool registered", "name", t.Name())
@@ -107,13 +101,6 @@ func (rt *Runtime) RegisterTool(t tools.Tool) {
 
 // AddAgent adds an agent to the runtime programmatically.
 // Must be called before Start() or StartAndRun().
-// Usage:
-//
-//	rt.AddAgent(agents.Agent{
-//	    ID:   "planner",
-//	    Role: agents.Planner,
-//	    Goal: "Break the task into clear steps",
-//	})
 func (rt *Runtime) AddAgent(cfg agents.Config) {
 	adapter, err := rt.resolveAgentAdapter(cfg)
 	if err != nil {
@@ -128,17 +115,91 @@ func (rt *Runtime) AddAgent(cfg agents.Config) {
 }
 
 // SetTask overrides the task that will run when StartAndRun() is called.
-// Use this to provide a task from a dynamic source — HTTP request,
-// message queue, database — instead of hardcoding it in YAML.
-//
-// Usage:
-//
-//	rt.SetTask(routex.Task{
-//	    Input: r.FormValue("topic"),  // from an HTTP request
-//	})
 func (rt *Runtime) SetTask(t Task) {
 	rt.task = t
 	rt.logger.Debug("task set", "input_len", len(t.Input))
+}
+
+// GetTask returns the current task configuration.
+// Used by the CLI to read and modify individual task fields.
+func (rt *Runtime) GetTask() Task {
+	return rt.task
+}
+
+// SetLogLevel changes the runtime log level after construction.
+// Accepts "debug", "info", "warn", "error". Rebuilds the logger.
+func (rt *Runtime) SetLogLevel(level string) {
+	rt.cfg.LogLevel = level
+	logLevel := parseLogLevel(level)
+	rt.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: logLevel,
+	})).With("runtime", rt.cfg.Name)
+}
+
+// AgentPlanEntry is one agent's summary in an execution plan.
+type AgentPlanEntry struct {
+	ID          string
+	Role        string
+	DependsOn   []string
+	LLMProvider string // empty if inheriting runtime default
+	LLMModel    string // empty if inheriting runtime default
+}
+
+// ExecutionPlan returns the wave-by-wave agent execution order
+// without running anything. Used by the CLI --dry-run flag.
+func (rt *Runtime) ExecutionPlan() [][]AgentPlanEntry {
+	var waves [][]AgentPlanEntry
+
+	// Group agents into waves the same way the scheduler would
+	// We do a simplified version here — topological sort by depends_on
+	type node struct {
+		cfg      agents.Config
+		inDegree int
+	}
+
+	nodes := make(map[string]*node, len(rt.cfg.Agents))
+	for _, cfg := range rt.cfg.Agents {
+		nodes[cfg.ID] = &node{cfg: cfg, inDegree: len(cfg.DependsOn)}
+	}
+
+	placed := make(map[string]bool)
+	for len(placed) < len(nodes) {
+		var wave []AgentPlanEntry
+		for id, n := range nodes {
+			if placed[id] {
+				continue
+			}
+			// Check if all dependencies are placed
+			ready := true
+			for _, dep := range n.cfg.DependsOn {
+				if !placed[dep] {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				entry := AgentPlanEntry{
+					ID:        id,
+					Role:      n.cfg.Role.String(),
+					DependsOn: n.cfg.DependsOn,
+				}
+				if n.cfg.LLM != nil {
+					entry.LLMProvider = n.cfg.LLM.Provider
+					entry.LLMModel = n.cfg.LLM.Model
+				}
+				wave = append(wave, entry)
+			}
+		}
+		if len(wave) == 0 {
+			break // cycle or error — scheduler will catch it properly
+		}
+		for _, e := range wave {
+			placed[e.ID] = true
+		}
+		waves = append(waves, wave)
+	}
+
+	return waves
 }
 
 // autoRegisterTools walks the ToolConfigs from the YAML and tries to
@@ -175,9 +236,6 @@ func (rt *Runtime) autoRegisterTools() error {
 // Start initialises the supervisor and scheduler, builds all agents
 // from the config, and launches their goroutines.
 // Returns an error if the agent graph is invalid (cycle, missing reference).
-//
-// After Start(), use Run() to send a task.
-// Or skip Start() entirely and call StartAndRun() which does both.
 func (rt *Runtime) Start(ctx context.Context) error {
 	if rt.started {
 		return fmt.Errorf("routex: runtime already started")
@@ -313,6 +371,7 @@ func (rt *Runtime) assembleResult(
 		AgentResults: make(map[string]AgentResult, len(agentResults)),
 		TraceID:      runID,
 		Duration:     time.Since(startTime),
+		OutputFile:   rt.task.OutputFile,
 	}
 
 	for id, ar := range agentResults {
@@ -368,6 +427,9 @@ func (rt *Runtime) findFinalOutput(agentResults map[string]agents.Result) string
 // resolveAgentAdapter returns the LLM adapter for a given agent.
 // If the agent has its own LLM config, a new adapter is built from it.
 // Otherwise the runtime's default adapter is returned.
+//
+// This is what enables multi-LLM crews — each agent can use a completely
+// different provider and model from its peers.
 func (rt *Runtime) resolveAgentAdapter(cfg agents.Config) (llm.Adapter, error) {
 	if cfg.LLM == nil {
 		return rt.adapter, nil

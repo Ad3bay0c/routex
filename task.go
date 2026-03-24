@@ -29,6 +29,9 @@ type Result struct {
 	// Output is the final text produced by the last agent in the chain.
 	Output string
 
+	// OutputFile is the path where the output was written, if configured.
+	OutputFile string
+
 	// Duration is how long the entire run took from start to finish.
 	Duration time.Duration
 
