@@ -150,6 +150,36 @@ type agent struct {
 	} `yaml:"llm"`
 }
 
+// LoadOption is a functional option for LoadConfig.
+// Use the With* functions to build options.
+type LoadOption func(*loadOptions)
+
+type loadOptions struct {
+	envFile   string // overrides env_file: in YAML when non-empty
+	taskInput string // overrides task.input when non-empty
+}
+
+// WithEnvFile overrides the env_file: field in agents.yaml.
+// Useful when you want to load a different .env file without
+// modifying the YAML — e.g. the CLI --env-file flag.
+//
+//	rt, err := routex.LoadConfig("agents.yaml", routex.WithEnvFile(".env.prod"))
+func WithEnvFile(path string) LoadOption {
+	return func(o *loadOptions) {
+		o.envFile = path
+	}
+}
+
+// WithTaskInput overrides the task.input field in agents.yaml.
+// Equivalent to setting ROUTEX_TASK but passed directly in code.
+//
+//	rt, err := routex.LoadConfig("agents.yaml", routex.WithTaskInput("Compare weather in Lagos and London"))
+func WithTaskInput(input string) LoadOption {
+	return func(o *loadOptions) {
+		o.taskInput = input
+	}
+}
+
 // LoadConfig reads a YAML file from disk, parses it, validates every field,
 // and returns a Runtime ready to have tools registered and be started.
 //
@@ -163,7 +193,13 @@ type agent struct {
 //	if err != nil {
 //	    log.Fatal(err)  // tells you exactly what is wrong and where
 //	}
-func LoadConfig(path string) (*Runtime, error) {
+func LoadConfig(path string, opts ...LoadOption) (*Runtime, error) {
+	// Apply options
+	o := &loadOptions{}
+	for _, opt := range opts {
+		opt(o)
+	}
+
 	// — read the file from disk
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -181,7 +217,14 @@ func LoadConfig(path string) (*Runtime, error) {
 		} `yaml:"runtime"`
 	}
 	if err := yaml.Unmarshal(data, &peek); err == nil {
-		if err := loadEnvFile(peek.Runtime.EnvFile, path); err != nil {
+		// WithEnvFile option takes precedence over env_file: in YAML.
+		// This lets the CLI pass --env-file directly without touching
+		// env vars or the config file.
+		envFile := o.envFile
+		if envFile == "" {
+			envFile = peek.Runtime.EnvFile
+		}
+		if err := loadEnvFile(envFile, path); err != nil {
 			return nil, fmt.Errorf("routex: load env file: %w", err)
 		}
 	}
@@ -190,6 +233,12 @@ func LoadConfig(path string) (*Runtime, error) {
 	var raw yamlFile
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("routex: invalid YAML in %q: %w", path, err)
+	}
+
+	// — apply WithTaskInput override before buildConfig runs
+	// so it takes precedence over both task.input in YAML and ROUTEX_TASK.
+	if o.taskInput != "" {
+		raw.Task.Input = o.taskInput
 	}
 
 	// — convert and validate into a clean Config
