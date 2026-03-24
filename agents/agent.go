@@ -62,7 +62,9 @@ type Agent struct {
 	// Supervisor is the only reader — do not read from this directly.
 	notify chan Result
 
-	logger *slog.Logger
+	logger  *slog.Logger
+	tracer  AgentTracer
+	metrics AgentMetrics
 }
 
 // Message is what the scheduler sends to an agent's Inbox.
@@ -107,7 +109,16 @@ func New(
 	mem memory.Store,
 	registry *tools.Registry,
 	logger *slog.Logger,
+	tracer AgentTracer,
+	metrics AgentMetrics,
 ) *Agent {
+	// Default to no-ops if not provided
+	if tracer == nil {
+		tracer = noopTracer{}
+	}
+	if metrics == nil {
+		metrics = noopMetrics{}
+	}
 	return &Agent{
 		cfg:      cfg,
 		llm:      adapter,
@@ -117,6 +128,8 @@ func New(
 		output:   make(chan Result, 1),
 		notify:   make(chan Result, 1),
 		logger:   logger.With("agent_id", cfg.ID, "role", cfg.Role.String()),
+		tracer:   tracer,
+		metrics:  metrics,
 	}
 }
 
@@ -173,8 +186,9 @@ func (a *Agent) DependsOn() []string {
 func (a *Agent) process(ctx context.Context, msg Message) Result {
 	start := time.Now()
 
-	// Apply the agent's per-task timeout on top of the goroutine context.
-	// If the goroutine context is cancelled first, that wins.
+	// Start an agent-level span — wraps the full process including retries
+	ctx, finishSpan := a.tracer.StartAgent(ctx, a.cfg.ID, a.cfg.Role.String())
+
 	if a.cfg.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, a.cfg.Timeout)
@@ -188,11 +202,11 @@ func (a *Agent) process(ctx context.Context, msg Message) Result {
 		lastErr   error
 	)
 
-	// Retry loop — each attempt clears history for a clean slate.
 	maxAttempts := a.cfg.MaxRetries + 1
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
 			a.logger.Warn("retrying", "attempt", attempt, "error", lastErr)
+			a.metrics.RecordAgentFailure(a.cfg.ID)
 			histKey := memory.AgentKey(a.cfg.ID, "history")
 			_ = a.mem.ClearHistory(ctx, histKey)
 		}
@@ -202,6 +216,15 @@ func (a *Agent) process(ctx context.Context, msg Message) Result {
 			break
 		}
 	}
+
+	duration := time.Since(start)
+
+	// Record agent-level metrics
+	a.metrics.RecordAgentRun(a.cfg.ID, a.cfg.Role.String(), duration)
+	a.metrics.RecordTokens(a.cfg.ID, a.llm.Provider(), tokens)
+
+	// Close the agent span — mark as errored if all retries failed
+	finishSpan(lastErr)
 
 	if lastErr != nil {
 		a.logger.Error("agent failed after all retries", "error", lastErr)
@@ -277,11 +300,17 @@ func (a *Agent) think(ctx context.Context, msg Message) (string, []tools.ToolCal
 
 		a.logger.Debug("calling llm", "history_len", len(history), "tools", len(allowedSchemas))
 
-		resp, err := a.llm.Complete(ctx, llm.Request{
+		// Start a span for this LLM call — closed when the call returns
+		llmCtx, finishLLM := a.tracer.StartLLMCall(ctx, a.llm.Provider(), a.llm.Model())
+
+		resp, err := a.llm.Complete(llmCtx, llm.Request{
 			SystemPrompt: systemPrompt,
 			History:      history,
 			ToolSchemas:  allowedSchemas,
 		})
+
+		finishLLM(resp.Usage.Total(), err)
+
 		if err != nil {
 			return "", toolCallLog, totalTokens, fmt.Errorf("llm call: %w", err)
 		}
@@ -363,12 +392,21 @@ func (a *Agent) think(ctx context.Context, msg Message) (string, []tools.ToolCal
 			}
 
 			toolStart := time.Now()
-			output, toolErr := a.registry.Execute(ctx, tc.ToolName, json.RawMessage(tc.Input))
+
+			// Start a span for this tool call — closed when execution returns
+			toolCtx, finishTool := a.tracer.StartToolCall(ctx, tc.ToolName, tc.Input)
+			output, toolErr := a.registry.Execute(toolCtx, tc.ToolName, json.RawMessage(tc.Input))
+			toolDuration := time.Since(toolStart)
+
+			// Record output or error string for the span and metrics
+			outputStr := string(output)
+			finishTool(outputStr, toolErr)
+			a.metrics.RecordToolCall(tc.ToolName, toolDuration, toolErr)
 
 			toolResult := tools.ToolCall{
 				ToolName: tc.ToolName,
 				Input:    tc.Input,
-				Duration: time.Since(toolStart),
+				Duration: toolDuration,
 			}
 
 			if toolErr != nil {
@@ -376,7 +414,7 @@ func (a *Agent) think(ctx context.Context, msg Message) (string, []tools.ToolCal
 				toolResult.Error = toolErr
 				output = json.RawMessage(fmt.Sprintf(`{"error":%q}`, toolErr.Error()))
 			} else {
-				toolResult.Output = string(output)
+				toolResult.Output = outputStr
 			}
 
 			toolCallLog = append(toolCallLog, toolResult)
