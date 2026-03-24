@@ -123,3 +123,22 @@ func resolveEnvValue(value string) string {
 	}
 	return value
 }
+
+// SchemaForBuiltin returns the schema for a built-in tool by name
+// without constructing the full tool. Used by the CLI tools list command.
+// Returns false if the tool is not registered or has no schema available.
+func SchemaForBuiltin(name string) (Schema, bool) {
+	builtinMu.RLock()
+	factory, ok := builtinRegistry[name]
+	builtinMu.RUnlock()
+	if !ok {
+		return Schema{}, false
+	}
+	// Build with an empty config — tools that need API keys will fail,
+	// but we catch the error and return what we have.
+	t, err := factory(ToolConfig{Name: name})
+	if err != nil {
+		return Schema{}, false
+	}
+	return t.Schema(), true
+}
