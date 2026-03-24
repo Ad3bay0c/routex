@@ -1,6 +1,5 @@
 # ── Binaries ────────────────────────────────────────────────
 # The compiled routex CLI and any example binaries
-routex
 research-crew
 *.exe
 *.out
@@ -37,4 +36,4 @@ vendor/
 # Jaeger and Prometheus local storage if run via docker-compose
 jaeger-data/
 prometheus-data/
-**/outputs/**
+outputs
