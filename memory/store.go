@@ -74,12 +74,15 @@ type Message struct {
 	Content string
 
 	// Timestamp records when this message was added.
-	// Useful for debugging — you can see exactly when each thought happened.
 	Timestamp time.Time
 
-	// ToolCall is non-nil when this message records a tool being called.
-	// Stored so the agent can show the LLM the full tool call history.
+	// ToolCall is non-nil when this message records a single tool result.
+	// Used for user-role messages that carry one tool result back to the LLM.
 	ToolCall *ToolCallRecord
+
+	// ToolCalls is non-nil when an assistant message requested multiple tools
+	// in one response.
+	ToolCalls []ToolCallRecord
 }
 
 // ToolCallRecord is embedded in a Message when that message records a tool use.
@@ -88,6 +91,10 @@ type Message struct {
 type ToolCallRecord struct {
 	// ToolName is the name of the tool that was called.
 	ToolName string
+
+	// ID is the unique identifier the LLM assigned to this tool call.
+	// Required to match tool_use blocks with tool_result blocks.
+	ID string
 
 	// Input is the JSON that was sent to the tool.
 	Input string
