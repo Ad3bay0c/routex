@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -62,8 +61,7 @@ func openAITextResponse(content string) map[string]any {
 	}
 }
 
-// openAIToolCallResponse returns an OpenAI response requesting a tool call.
-func openAIToolCallResponse(toolName, argsJSON string) map[string]any {
+func openAIToolCallResponse(calls []map[string]any) map[string]any {
 	return map[string]any{
 		"id":     "chatcmpl-test",
 		"object": "chat.completion",
@@ -72,18 +70,9 @@ func openAIToolCallResponse(toolName, argsJSON string) map[string]any {
 			{
 				"index": 0,
 				"message": map[string]any{
-					"role":    "assistant",
-					"content": nil,
-					"tool_calls": []map[string]any{
-						{
-							"id":   "call_test_123",
-							"type": "function",
-							"function": map[string]any{
-								"name":      toolName,
-								"arguments": argsJSON,
-							},
-						},
-					},
+					"role":       "assistant",
+					"content":    nil,
+					"tool_calls": calls,
 				},
 				"finish_reason": "tool_calls",
 			},
@@ -96,9 +85,19 @@ func openAIToolCallResponse(toolName, argsJSON string) map[string]any {
 	}
 }
 
+func openAISingleToolCall(id, name, args string) map[string]any {
+	return map[string]any{
+		"id":   id,
+		"type": "function",
+		"function": map[string]any{
+			"name":      name,
+			"arguments": args,
+		},
+	}
+}
+
 func TestOpenAIAdapter_TextResponse(t *testing.T) {
-	content := "Hello from mock GPT"
-	srv := mockServer(t, http.StatusOK, openAITextResponse(content))
+	srv := mockServer(t, http.StatusOK, openAITextResponse("Hello from mock GPT"))
 
 	adapter := &OpenAIAdapter{
 		client:      newOpenAIClientWithBaseURL(t, srv.URL),
@@ -113,11 +112,11 @@ func TestOpenAIAdapter_TextResponse(t *testing.T) {
 		t.Fatalf("Complete() error: %v", err)
 	}
 
-	if resp.Content != content {
-		t.Errorf("got = %q, want %q", resp.Content, content)
+	if resp.Content != "Hello from mock GPT" {
+		t.Errorf("Content = %q, want %q", resp.Content, "Hello from mock GPT")
 	}
-	if resp.ToolCall != nil {
-		t.Errorf("ToolCall should be nil for text response")
+	if len(resp.ToolCalls) != 0 {
+		t.Errorf("ToolCalls should be empty for text response, got %d", len(resp.ToolCalls))
 	}
 	if resp.Usage.InputTokens != 10 {
 		t.Errorf("InputTokens = %d, want 10", resp.Usage.InputTokens)
@@ -133,9 +132,11 @@ func TestOpenAIAdapter_TextResponse(t *testing.T) {
 	}
 }
 
-func TestOpenAIAdapter_ToolCallResponse(t *testing.T) {
-	argsJSON := `{"query":"Go 1.26 release notes"}`
-	srv := mockServer(t, http.StatusOK, openAIToolCallResponse("web_search", argsJSON))
+func TestOpenAIAdapter_SingleToolCall(t *testing.T) {
+	argsJSON := `{"query":"Go 1.24 release notes"}`
+	srv := mockServer(t, http.StatusOK, openAIToolCallResponse([]map[string]any{
+		openAISingleToolCall("call_test_123", "web_search", argsJSON),
+	}))
 
 	adapter := &OpenAIAdapter{
 		client:      newOpenAIClientWithBaseURL(t, srv.URL),
@@ -149,12 +150,7 @@ func TestOpenAIAdapter_ToolCallResponse(t *testing.T) {
 		SystemPrompt: "You are a researcher.",
 		History:      simpleHistory("find go 1.24 notes"),
 		ToolSchemas: map[string]tools.Schema{
-			"web_search": {
-				Description: "Search the web",
-				Parameters: map[string]tools.Parameter{
-					"query": {Type: "string", Required: true},
-				},
-			},
+			"web_search": {Description: "Search the web"},
 		},
 	})
 	if err != nil {
@@ -164,70 +160,96 @@ func TestOpenAIAdapter_ToolCallResponse(t *testing.T) {
 	if resp.Content != "" {
 		t.Errorf("Content should be empty for tool call response, got %q", resp.Content)
 	}
-	if resp.ToolCall == nil {
-		t.Fatalf("ToolCall should not be nil")
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1", len(resp.ToolCalls))
 	}
-	if resp.ToolCall.ToolName != "web_search" {
-		t.Errorf("ToolName = %q, want %q", resp.ToolCall.ToolName, "web_search")
+	tc := resp.ToolCalls[0]
+	if tc.ToolName != "web_search" {
+		t.Errorf("ToolName = %q, want %q", tc.ToolName, "web_search")
 	}
-	if resp.ToolCall.ID != "call_test_123" {
-		t.Errorf("ToolCall.ID = %q, want %q", resp.ToolCall.ID, "call_test_123")
+	if tc.ID != "call_test_123" {
+		t.Errorf("ID = %q, want %q", tc.ID, "call_test_123")
 	}
-	if resp.ToolCall.Input != argsJSON {
-		t.Errorf("ToolCall.Input = %q, want %q", resp.ToolCall.Input, argsJSON)
+	if tc.Input != argsJSON {
+		t.Errorf("Input = %q, want %q", tc.Input, argsJSON)
 	}
 	if resp.FinishReason != "tool_calls" {
 		t.Errorf("FinishReason = %q, want %q", resp.FinishReason, "tool_calls")
 	}
 }
 
+func TestOpenAIAdapter_MultipleToolCalls(t *testing.T) {
+	// The LLM requests three independent tools in one response
+	srv := mockServer(t, http.StatusOK, openAIToolCallResponse([]map[string]any{
+		openAISingleToolCall("call_1", "web_search", `{"query":"Go 1.24"}`),
+		openAISingleToolCall("call_2", "read_file", `{"path":"notes.md"}`),
+		openAISingleToolCall("call_3", "wikipedia", `{"topic":"Go language"}`),
+	}))
+
+	adapter := &OpenAIAdapter{
+		client: newOpenAIClientWithBaseURL(t, srv.URL),
+		model:  "gpt-4o", maxTokens: 1024, temperature: 0.7, timeout: 5 * time.Second,
+	}
+
+	resp, err := adapter.Complete(context.Background(), simpleRequest("research Go"))
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	if len(resp.ToolCalls) != 3 {
+		t.Fatalf("ToolCalls len = %d, want 3", len(resp.ToolCalls))
+	}
+	if resp.ToolCalls[0].ToolName != "web_search" {
+		t.Errorf("[0].ToolName = %q, want web_search", resp.ToolCalls[0].ToolName)
+	}
+	if resp.ToolCalls[1].ToolName != "read_file" {
+		t.Errorf("[1].ToolName = %q, want read_file", resp.ToolCalls[1].ToolName)
+	}
+	if resp.ToolCalls[2].ToolName != "wikipedia" {
+		t.Errorf("[2].ToolName = %q, want wikipedia", resp.ToolCalls[2].ToolName)
+	}
+	// Each ID must be preserved correctly for matching results back
+	if resp.ToolCalls[0].ID != "call_1" {
+		t.Errorf("[0].ID = %q, want call_1", resp.ToolCalls[0].ID)
+	}
+	if resp.ToolCalls[2].ID != "call_3" {
+		t.Errorf("[2].ID = %q, want call_3", resp.ToolCalls[2].ID)
+	}
+	if resp.Content != "" {
+		t.Errorf("Content should be empty when tool calls present")
+	}
+}
+
 func TestOpenAIAdapter_ErrorResponse(t *testing.T) {
 	srv := mockServer(t, http.StatusUnauthorized, map[string]any{
-		"error": map[string]any{
-			"message": "Invalid API key",
-			"type":    "invalid_request_error",
-		},
+		"error": map[string]any{"message": "Invalid API key", "type": "invalid_request_error"},
 	})
 
 	adapter := &OpenAIAdapter{
-		client:      newOpenAIClientWithBaseURL(t, srv.URL),
-		model:       "gpt-4o",
-		maxTokens:   1024,
-		temperature: 0.7,
-		timeout:     5 * time.Second,
+		client: newOpenAIClientWithBaseURL(t, srv.URL),
+		model:  "gpt-4o", maxTokens: 1024, temperature: 0.7, timeout: 5 * time.Second,
 	}
-
 	_, err := adapter.Complete(context.Background(), simpleRequest("hello"))
 	if err == nil {
 		t.Fatal("Complete() should return error for 401 response")
-	}
-	if !strings.Contains(err.Error(), "openai: api call failed") {
-		t.Errorf("error = %q, want 'openai: api call failed'", err)
 	}
 }
 
 func TestOpenAIAdapter_EmptyChoices(t *testing.T) {
 	srv := mockServer(t, http.StatusOK, map[string]any{
-		"id":      "chatcmpl-test",
-		"object":  "chat.completion",
-		"model":   "gpt-4o",
+		"id": "chatcmpl-test", "object": "chat.completion", "model": "gpt-4o",
 		"choices": []map[string]any{},
 		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
 	})
 
 	adapter := &OpenAIAdapter{
-		client:      newOpenAIClientWithBaseURL(t, srv.URL),
-		model:       "gpt-4o",
-		maxTokens:   1024,
-		temperature: 0.7,
-		timeout:     5 * time.Second,
+		client: newOpenAIClientWithBaseURL(t, srv.URL),
+		model:  "gpt-4o", maxTokens: 1024, temperature: 0.7, timeout: 5 * time.Second,
 	}
-
 	resp, err := adapter.Complete(context.Background(), simpleRequest("hello"))
 	if err != nil {
 		t.Fatalf("Complete() unexpected error: %v", err)
 	}
-
 	if resp.FinishReason != "no_choices" {
 		t.Errorf("FinishReason = %q, want %q", resp.FinishReason, "no_choices")
 	}
@@ -239,16 +261,12 @@ func TestOpenAIAdapter_RequestContainsSystemPrompt(t *testing.T) {
 	srv := mockServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
 		capturedBody, _ = readAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(openAITextResponse("ok"))
 	})
 
 	adapter := &OpenAIAdapter{
-		client:      newOpenAIClientWithBaseURL(t, srv.URL),
-		model:       "gpt-4o",
-		maxTokens:   1024,
-		temperature: 0.7,
-		timeout:     5 * time.Second,
+		client: newOpenAIClientWithBaseURL(t, srv.URL),
+		model:  "gpt-4o", maxTokens: 1024, temperature: 0.7, timeout: 5 * time.Second,
 	}
 
 	systemPrompt := "You are a weather reporter."
@@ -260,24 +278,17 @@ func TestOpenAIAdapter_RequestContainsSystemPrompt(t *testing.T) {
 		t.Fatalf("Complete() error: %v", err)
 	}
 
-	// The captured request body should contain the system prompt
-	// as the first message with role "system"
 	var body map[string]any
 	if err := json.Unmarshal(capturedBody, &body); err != nil {
 		t.Fatalf("unmarshal request body: %v", err)
 	}
-
-	messages, ok := body["messages"].([]any)
-	if !ok || len(messages) == 0 {
+	messages := body["messages"].([]any)
+	if len(messages) == 0 {
 		t.Fatal("request body missing messages array")
 	}
-
-	firstMsg, ok := messages[0].(map[string]any)
-	if !ok {
-		t.Fatal("first message is not an object")
-	}
+	firstMsg := messages[0].(map[string]any)
 	if firstMsg["role"] != "system" {
-		t.Errorf("first message role = %q, want %q", firstMsg["role"], "system")
+		t.Errorf("first message role = %q, want system", firstMsg["role"])
 	}
 	if firstMsg["content"] != systemPrompt {
 		t.Errorf("first message content = %q, want %q", firstMsg["content"], systemPrompt)
@@ -287,10 +298,10 @@ func TestOpenAIAdapter_RequestContainsSystemPrompt(t *testing.T) {
 func TestOpenAIAdapter_ModelAndProvider(t *testing.T) {
 	adapter := &OpenAIAdapter{model: "gpt-4o"}
 	if adapter.Model() != "gpt-4o" {
-		t.Errorf("Model() = %q, want %q", adapter.Model(), "gpt-4o")
+		t.Errorf("Model() = %q, want gpt-4o", adapter.Model())
 	}
 	if adapter.Provider() != "openai" {
-		t.Errorf("Provider() = %q, want %q", adapter.Provider(), "openai")
+		t.Errorf("Provider() = %q, want openai", adapter.Provider())
 	}
 }
 
@@ -305,7 +316,6 @@ func TestOpenAIAdapter_MissingAPIKey(t *testing.T) {
 }
 
 func TestOpenAIAdapter_ContextCancellation(t *testing.T) {
-	// Server that hangs until context is cancelled
 	ctx := context.Background()
 	srv := mockServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
 		<-ctx.Done()

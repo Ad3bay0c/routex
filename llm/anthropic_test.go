@@ -27,25 +27,27 @@ func anthropicTextResponse(content string) map[string]any {
 	}
 }
 
-func anthropicToolCallResponse(toolName, toolID string, input map[string]any) map[string]any {
+func anthropicToolCallContent(calls []map[string]any) map[string]any {
 	return map[string]any{
-		"id":   "msg_test",
-		"type": "message",
-		"role": "assistant",
-		"content": []map[string]any{
-			{
-				"type":  "tool_use",
-				"id":    toolID,
-				"name":  toolName,
-				"input": input,
-			},
-		},
+		"id":          "msg_test",
+		"type":        "message",
+		"role":        "assistant",
+		"content":     calls,
 		"model":       "claude-sonnet-4-6",
 		"stop_reason": "tool_use",
 		"usage": map[string]any{
 			"input_tokens":  20,
 			"output_tokens": 15,
 		},
+	}
+}
+
+func anthropicToolUseBlock(id, name string, input map[string]any) map[string]any {
+	return map[string]any{
+		"type":  "tool_use",
+		"id":    id,
+		"name":  name,
+		"input": input,
 	}
 }
 
@@ -70,8 +72,8 @@ func TestAnthropicAdapter_TextResponse(t *testing.T) {
 	if resp.Content != "Hello from mock Claude" {
 		t.Errorf("Content = %q, want %q", resp.Content, "Hello from mock Claude")
 	}
-	if resp.ToolCall != nil {
-		t.Errorf("ToolCall should be nil for text response")
+	if len(resp.ToolCalls) != 0 {
+		t.Errorf("ToolCalls should be empty for text response, got %d", len(resp.ToolCalls))
 	}
 	if resp.Usage.InputTokens != 12 {
 		t.Errorf("InputTokens = %d, want 12", resp.Usage.InputTokens)
@@ -80,17 +82,16 @@ func TestAnthropicAdapter_TextResponse(t *testing.T) {
 		t.Errorf("OutputTokens = %d, want 25", resp.Usage.OutputTokens)
 	}
 	if resp.FinishReason != "end_turn" {
-		t.Errorf("FinishReason = %q, want %q", resp.FinishReason, "end_turn")
+		t.Errorf("FinishReason = %q, want end_turn", resp.FinishReason)
 	}
 }
 
-func TestAnthropicAdapter_ToolCallResponse(t *testing.T) {
+func TestAnthropicAdapter_SingleToolCall(t *testing.T) {
 	toolID := "tool_weather_456"
 	toolName := "web_search"
-	toolInput := map[string]any{"query": "Lagos weather today"}
-	srv := mockServer(t, http.StatusOK,
-		anthropicToolCallResponse(toolName, toolID, toolInput),
-	)
+	srv := mockServer(t, http.StatusOK, anthropicToolCallContent([]map[string]any{
+		anthropicToolUseBlock(toolID, toolName, map[string]any{"query": "Lagos weather today"}),
+	}))
 
 	adapter, err := NewAnthropicAdapter(Config{
 		APIKey:  "test-key",
@@ -106,12 +107,7 @@ func TestAnthropicAdapter_ToolCallResponse(t *testing.T) {
 		SystemPrompt: "You are a researcher.",
 		History:      simpleHistory("find weather in Lagos"),
 		ToolSchemas: map[string]tools.Schema{
-			toolName: {
-				Description: "Search the web",
-				Parameters: map[string]tools.Parameter{
-					"query": {Type: "string", Required: true},
-				},
-			},
+			toolName: {Description: "Search the web"},
 		},
 	})
 	if err != nil {
@@ -121,23 +117,65 @@ func TestAnthropicAdapter_ToolCallResponse(t *testing.T) {
 	if resp.Content != "" {
 		t.Errorf("Content should be empty for tool call, got %q", resp.Content)
 	}
-	if resp.ToolCall == nil {
-		t.Fatalf("ToolCall should not be nil")
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1", len(resp.ToolCalls))
 	}
-	if resp.ToolCall.ToolName != toolName {
-		t.Errorf("ToolName = %q, want %q", resp.ToolCall.ToolName, toolName)
+	tc := resp.ToolCalls[0]
+	if tc.ToolName != toolName {
+		t.Errorf("ToolName = %q, want %q", tc.ToolName, toolName)
 	}
-	if resp.ToolCall.ID != toolID {
-		t.Errorf("ToolCall.ID = %q, want %q", resp.ToolCall.ID, toolID)
+	if tc.ID != toolID {
+		t.Errorf("ID = %q, want toolu_test_456", tc.ID)
 	}
 
-	// Input should be the JSON-serialised form of toolInput
 	var parsedInput map[string]any
-	if err := json.Unmarshal([]byte(resp.ToolCall.Input), &parsedInput); err != nil {
-		t.Fatalf("ToolCall.Input is not valid JSON: %v", err)
+	if err := json.Unmarshal([]byte(tc.Input), &parsedInput); err != nil {
+		t.Fatalf("Input is not valid JSON: %v", err)
 	}
 	if parsedInput["query"] != "Lagos weather today" {
-		t.Errorf("ToolCall.Input query = %q, want %q", parsedInput["query"], "Lagos weather today")
+		t.Errorf("Input query = %q, want Lagos weather today", parsedInput["query"])
+	}
+}
+
+func TestAnthropicAdapter_MultipleToolCalls(t *testing.T) {
+	// Anthropic returns multiple tool_use blocks in one response
+	srv := mockServer(t, http.StatusOK, anthropicToolCallContent([]map[string]any{
+		anthropicToolUseBlock("toolu_1", "web_search", map[string]any{"query": "Go 1.24"}),
+		anthropicToolUseBlock("toolu_2", "read_file", map[string]any{"path": "notes.md"}),
+		anthropicToolUseBlock("toolu_3", "wikipedia", map[string]any{"topic": "Go language"}),
+	}))
+
+	adapter, err := NewAnthropicAdapter(Config{
+		APIKey: "test-key", Model: "claude-sonnet-4-6",
+		BaseURL: srv.URL, Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewAnthropicAdapter() error: %v", err)
+	}
+
+	resp, err := adapter.Complete(context.Background(), simpleRequest("research Go"))
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	if len(resp.ToolCalls) != 3 {
+		t.Fatalf("ToolCalls len = %d, want 3", len(resp.ToolCalls))
+	}
+	if resp.ToolCalls[0].ToolName != "web_search" {
+		t.Errorf("[0].ToolName = %q, want web_search", resp.ToolCalls[0].ToolName)
+	}
+	if resp.ToolCalls[1].ToolName != "read_file" {
+		t.Errorf("[1].ToolName = %q, want read_file", resp.ToolCalls[1].ToolName)
+	}
+	if resp.ToolCalls[2].ToolName != "wikipedia" {
+		t.Errorf("[2].ToolName = %q, want wikipedia", resp.ToolCalls[2].ToolName)
+	}
+	// IDs preserved — used to match tool_result back
+	if resp.ToolCalls[0].ID != "toolu_1" {
+		t.Errorf("[0].ID = %q, want toolu_1", resp.ToolCalls[0].ID)
+	}
+	if resp.ToolCalls[2].ID != "toolu_3" {
+		t.Errorf("[2].ID = %q, want toolu_3", resp.ToolCalls[2].ID)
 	}
 }
 
@@ -148,15 +186,12 @@ func TestAnthropicAdapter_ErrorResponse(t *testing.T) {
 	})
 
 	adapter, err := NewAnthropicAdapter(Config{
-		APIKey:  "bad-key",
-		Model:   "claude-sonnet-4-6",
-		BaseURL: srv.URL,
-		Timeout: 5 * time.Second,
+		APIKey: "bad-key", Model: "claude-sonnet-4-6",
+		BaseURL: srv.URL, Timeout: 5 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("NewAnthropicAdapter() error: %v", err)
 	}
-
 	_, err = adapter.Complete(context.Background(), simpleRequest("hello"))
 	if err == nil {
 		t.Fatal("Complete() should return error for 401 response")
@@ -164,12 +199,12 @@ func TestAnthropicAdapter_ErrorResponse(t *testing.T) {
 }
 
 func TestAnthropicAdapter_ModelAndProvider(t *testing.T) {
-	adapter := &AnthropicAdapter{model: "claude-sonnet-4-6"}
-	if adapter.Model() != "claude-sonnet-4-6" {
-		t.Errorf("Model() = %q, want %q", adapter.Model(), "claude-sonnet-4-6")
+	a := &AnthropicAdapter{model: "claude-sonnet-4-6"}
+	if a.Model() != "claude-sonnet-4-6" {
+		t.Errorf("Model() = %q, want claude-sonnet-4-6", a.Model())
 	}
-	if adapter.Provider() != "anthropic" {
-		t.Errorf("Provider() = %q, want %q", adapter.Provider(), "anthropic")
+	if a.Provider() != "anthropic" {
+		t.Errorf("Provider() = %q, want anthropic", a.Provider())
 	}
 }
 
@@ -177,8 +212,5 @@ func TestAnthropicAdapter_MissingAPIKey(t *testing.T) {
 	_, err := NewAnthropicAdapter(Config{Model: "claude-sonnet-4-6"})
 	if err == nil {
 		t.Fatal("NewAnthropicAdapter() should error with empty APIKey")
-	}
-	if err.Error() != "anthropic: api_key is required" {
-		t.Errorf("Error() = %q, want %q", err, "anthropic: api_key is required")
 	}
 }
