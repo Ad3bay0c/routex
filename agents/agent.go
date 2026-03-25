@@ -179,6 +179,14 @@ func (a *Agent) DependsOn() []string {
 	return a.cfg.DependsOn
 }
 
+func (a *Agent) Config() Config {
+	return a.cfg
+}
+
+func (a *Agent) SetConfig(cfg Config) {
+	a.cfg = cfg
+}
+
 // process handles a single Message — the thinking loop with retries.
 // ctx comes from Run() — it carries the agent's lifetime and any
 // timeout set by the supervisor. We apply an additional per-task

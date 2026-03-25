@@ -98,10 +98,10 @@ func (a *OpenAIAdapter) Complete(ctx context.Context, req Request) (Response, er
 	// as a message with role "system" — different from Anthropic
 	// which has a dedicated System field
 	chatReq := openai.ChatCompletionRequest{
-		Model:       a.model,
-		Messages:    messages,
-		MaxTokens:   maxTokens,
-		Temperature: float32(temperature),
+		Model:               a.model,
+		Messages:            messages,
+		MaxCompletionTokens: maxTokens,
+		Temperature:         float32(temperature),
 	}
 
 	// Only attach tools if there are any
