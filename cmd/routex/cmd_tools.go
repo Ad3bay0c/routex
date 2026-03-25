@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sort"
 
@@ -30,6 +31,10 @@ Examples:
   routex tools list --json`
 
 func toolsCommand(args []string) error {
+	return toolsCommandTo(os.Stdout, args)
+}
+
+func toolsCommandTo(out io.Writer, args []string) error {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, toolsUsage)
 		return fatalf("subcommand required: list")
@@ -37,9 +42,9 @@ func toolsCommand(args []string) error {
 
 	switch args[0] {
 	case "list":
-		return toolsListCommand(args[1:])
+		return toolsListCommandTo(out, args[1:])
 	case "help", "--help", "-h":
-		fmt.Println(toolsUsage)
+		fmt.Fprintln(out, toolsUsage)
 		return nil
 	default:
 		sub := args[0]
@@ -55,17 +60,15 @@ func toolsCommand(args []string) error {
 	}
 }
 
-func toolsListCommand(args []string) error {
+func toolsListCommandTo(out io.Writer, args []string) error {
 	var jsonOut string
 	flags := map[string]*string{"json": &jsonOut}
 
-	fmt.Printf("\nroutex tools list: %+v\n\n ", args)
 	_, err := parseFlags(args, flags)
 	if err != nil {
 		return err
 	}
 
-	// Collect all built-in tool names and their schemas
 	type toolInfo struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
@@ -77,8 +80,6 @@ func toolsListCommand(args []string) error {
 
 	var infos []toolInfo
 	for _, name := range builtins {
-		// Resolve with an empty config to get the schema — tools that
-		// require an API key will fail, so we just capture what we can.
 		schema, ok := tools.SchemaForBuiltin(name)
 		if !ok {
 			infos = append(infos, toolInfo{Name: name})
@@ -97,19 +98,22 @@ func toolsListCommand(args []string) error {
 
 	if jsonOut == "true" {
 		data, _ := marshalJSON(infos)
-		fmt.Println(string(data))
+		fmt.Fprintln(out, string(data))
 		return nil
 	}
 
-	fmt.Printf("\nBuilt-in tools (%d)\n\n", len(infos))
-	fmt.Printf("  %-25s  %s\n", "NAME", "DESCRIPTION")
-	fmt.Printf("  %-25s  %s\n", "────────────────────────", "─────────────────────────────────────────────")
+	fmt.Fprintf(out, "\nBuilt-in tools (%d)\n\n", len(infos))
+	fmt.Fprintf(out, "  %-25s  %s\n", "NAME", "DESCRIPTION")
+	fmt.Fprintf(out, "  %-25s  %s\n",
+		"────────────────────────",
+		"─────────────────────────────────────────────",
+	)
 	for _, t := range infos {
-		fmt.Printf("  %-25s  %s\n", t.Name, t.Description)
+		fmt.Fprintf(out, "  %-25s  %s\n", t.Name, t.Description)
 	}
-	fmt.Println()
-	fmt.Println("Configure any tool in agents.yaml under the tools: section.")
-	fmt.Println("See https://github.com/Ad3bay0c/routex for configuration details.")
-	fmt.Println()
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Configure any tool in agents.yaml under the tools: section.")
+	fmt.Fprintln(out, "See https://github.com/Ad3bay0c/routex for configuration details.")
+	fmt.Fprintln(out)
 	return nil
 }

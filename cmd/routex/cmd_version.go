@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"runtime"
 )
 
@@ -12,6 +14,10 @@ Flags:
   --json   Output as JSON`
 
 func versionCommand(args []string) error {
+	return versionCommandTo(os.Stdout, args)
+}
+
+func versionCommandTo(out io.Writer, args []string) error {
 	var jsonOut string
 	flags := map[string]*string{"json": &jsonOut}
 
@@ -36,12 +42,12 @@ func versionCommand(args []string) error {
 
 	if jsonOut == "true" {
 		data, _ := marshalJSON(info)
-		fmt.Println(string(data))
+		fmt.Fprintln(out, string(data))
 		return nil
 	}
 
-	fmt.Printf("routex %s\n", info.Version)
-	fmt.Printf("go     %s\n", info.GoVersion)
-	fmt.Printf("os     %s/%s\n", info.OS, info.Arch)
+	fmt.Fprintf(out, "routex %s\n", info.Version)
+	fmt.Fprintf(out, "go     %s\n", info.GoVersion)
+	fmt.Fprintf(out, "os     %s/%s\n", info.OS, info.Arch)
 	return nil
 }

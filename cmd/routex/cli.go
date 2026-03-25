@@ -46,7 +46,6 @@ func (c *cli) run(args []string) error {
 		printUsage()
 		return nil
 	default:
-		// ── did you mean? ─────────────────────────────────────────
 		fmt.Fprintf(os.Stderr, "routex: unknown command %q\n", cmd)
 
 		if suggestion, ok := suggest(cmd, knownCommands); ok {

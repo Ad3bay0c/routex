@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/Ad3bay0c/routex"
@@ -28,6 +29,10 @@ Examples:
   routex validate agents.yaml --json`
 
 func validateCommand(args []string) error {
+	return validateCommandTo(os.Stdout, args)
+}
+
+func validateCommandTo(out io.Writer, args []string) error {
 	var (
 		envFile string
 		jsonOut string
@@ -44,7 +49,7 @@ func validateCommand(args []string) error {
 		return err
 	}
 	if positional == nil {
-		fmt.Println(validateUsage)
+		fmt.Fprintln(out, validateUsage)
 		return nil
 	}
 	if len(positional) < 1 {
@@ -59,38 +64,37 @@ func validateCommand(args []string) error {
 		loadOpts = append(loadOpts, routex.WithEnvFile(envFile))
 	}
 
-	// Attempt to load — this runs the full parse + validation pipeline
-	_, err = routex.LoadConfig(configPath, loadOpts...)
+	_, loadErr := routex.LoadConfig(configPath, loadOpts...)
 
 	if jsonOut == "true" {
-		return printValidateJSON(configPath, err)
+		return printValidateJSON(out, configPath, loadErr)
 	}
-	return printValidateHuman(configPath, err)
+	return printValidateHuman(out, configPath, loadErr)
 }
 
-func printValidateHuman(configPath string, err error) error {
+func printValidateHuman(out io.Writer, configPath string, err error) error {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n✗  %s\n\n%v\n\n", configPath, err)
 		return err
 	}
-	fmt.Printf("\n✓  %s is valid\n\n", configPath)
+	fmt.Fprintf(out, "\n✓  %s is valid\n\n", configPath)
 	return nil
 }
 
-func printValidateJSON(configPath string, err error) error {
+func printValidateJSON(out io.Writer, configPath string, err error) error {
 	type result struct {
 		Valid bool   `json:"valid"`
 		File  string `json:"file"`
 		Error string `json:"error,omitempty"`
 	}
 
-	out := result{Valid: err == nil, File: configPath}
+	r := result{Valid: err == nil, File: configPath}
 	if err != nil {
-		out.Error = err.Error()
+		r.Error = err.Error()
 	}
 
-	data, _ := marshalJSON(out)
-	fmt.Println(string(data))
+	data, _ := marshalJSON(r)
+	fmt.Fprintln(out, string(data))
 
 	if err != nil {
 		return err
