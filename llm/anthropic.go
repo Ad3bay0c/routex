@@ -147,9 +147,10 @@ func (a *AnthropicAdapter) Provider() string {
 // buildAnthropicMessages converts our []memory.Message into the
 // []anthropic.MessageParam format the SDK expects.
 //
-// Anthropic messages alternate strictly between "user" and "assistant" roles.
-// Tool results are sent as "user" messages with a special tool_result block.
-// This function handles all those cases.
+// Multi-tool batches: when an assistant message has ToolCalls,
+// we emit one assistant message containing all tool_use blocks, followed
+// by one user message per tool result. This is what Anthropic requires —
+// all results for a batch must be present before the next LLM call.
 func buildAnthropicMessages(history []memory.Message) ([]anthropic.MessageParam, error) {
 	params := make([]anthropic.MessageParam, 0, len(history))
 
@@ -157,16 +158,13 @@ func buildAnthropicMessages(history []memory.Message) ([]anthropic.MessageParam,
 		switch msg.Role {
 
 		case "user":
-			// Plain user message — just text content
 			if msg.ToolCall == nil {
 				params = append(params, anthropic.NewUserMessage(
 					anthropic.NewTextBlock(msg.Content),
 				))
 				continue
 			}
-
-			// Tool result message — user role with tool_result content block
-			// The ToolUseID links this result to the tool_use block that requested it
+			// Single tool result
 			params = append(params, anthropic.NewUserMessage(
 				anthropic.NewToolResultBlock(
 					msg.ToolCall.ToolName,
@@ -176,22 +174,36 @@ func buildAnthropicMessages(history []memory.Message) ([]anthropic.MessageParam,
 			))
 
 		case "assistant":
-			// Assistant message — could be text or a tool_use request
+			// Multi-tool batch: one assistant message with all tool_use blocks
+			if len(msg.ToolCalls) > 0 {
+				blocks := make([]anthropic.ContentBlockParamUnion, 0, len(msg.ToolCalls))
+				for _, tc := range msg.ToolCalls {
+					var inputRaw map[string]any
+					if err := json.Unmarshal([]byte(tc.Input), &inputRaw); err != nil {
+						inputRaw = map[string]any{}
+					}
+					blocks = append(blocks, anthropic.NewToolUseBlock(
+						tc.ToolName,
+						inputRaw,
+						tc.ToolName,
+					))
+				}
+				params = append(params, anthropic.NewAssistantMessage(blocks...))
+				continue
+			}
+
 			if msg.ToolCall == nil {
-				// Plain text response from the model
 				params = append(params, anthropic.NewAssistantMessage(
 					anthropic.NewTextBlock(msg.Content),
 				))
 				continue
 			}
 
-			// Tool use request from the model
-			// We need to reconstruct the tool_use content block
+			// Single tool use request
 			var inputRaw map[string]any
 			if err := json.Unmarshal([]byte(msg.ToolCall.Input), &inputRaw); err != nil {
 				inputRaw = map[string]any{}
 			}
-
 			params = append(params, anthropic.NewAssistantMessage(
 				anthropic.NewToolUseBlock(
 					msg.ToolCall.ToolName, // tool_use_id
@@ -201,7 +213,6 @@ func buildAnthropicMessages(history []memory.Message) ([]anthropic.MessageParam,
 			))
 
 		default:
-			// Skip system messages — they go in the System field, not here
 			continue
 		}
 	}
@@ -258,7 +269,9 @@ func buildAnthropicTools(schemas map[string]tools.Schema) []anthropic.ToolUnionP
 // into our clean Response type.
 //
 // Anthropic responses can contain multiple content blocks — a mix of
-// text blocks and tool_use blocks. We handle both cases here.
+// text blocks and tool_use blocks. When multiple tool_use blocks are
+// present the agent will execute them all concurrently before the
+// next LLM call.
 func translateAnthropicResponse(msg *anthropic.Message) Response {
 	resp := Response{
 		FinishReason: string(msg.StopReason),
@@ -268,32 +281,21 @@ func translateAnthropicResponse(msg *anthropic.Message) Response {
 		},
 	}
 
-	// Walk through each content block in the response
 	for _, block := range msg.Content {
 		switch block.Type {
-
 		case "text":
-			// The model produced a text response — the agent is done this turn
 			resp.Content = block.Text
 
 		case "tool_use":
-			// The model wants to call a tool — give it what it needs
-			// We serialise the input back to JSON so the tool registry
-			// can pass it directly to Tool.Execute()
 			inputJSON, err := json.Marshal(block.Input)
 			if err != nil {
 				inputJSON = []byte("{}")
 			}
-
-			resp.ToolCall = &ToolCallRequest{
+			resp.ToolCalls = append(resp.ToolCalls, ToolCallRequest{
 				ID:       block.ID,
 				ToolName: block.Name,
 				Input:    string(inputJSON),
-			}
-
-			// Once we find a tool_use block, stop — agents handle one
-			// tool call per turn, then call Complete() again with the result
-			return resp
+			})
 		}
 	}
 

@@ -134,14 +134,13 @@ func (a *OpenAIAdapter) Provider() string {
 // buildOpenAIMessages converts our history into OpenAI's
 // []ChatCompletionMessage format.
 //
-// Key difference from Anthropic: OpenAI puts the system prompt
-// as the very first message in the array with role "system".
-// Tool results use role "tool" with a ToolCallID linking back
-// to the assistant message that requested the tool call.
+// Multi-tool batches: when an assistant message has ToolCalls,
+// we emit one assistant message with all tool_calls, followed by one
+// "tool" role message per result. OpenAI requires all results to be
+// present before the next assistant turn.
 func buildOpenAIMessages(systemPrompt string, history []memory.Message) []openai.ChatCompletionMessage {
 	messages := make([]openai.ChatCompletionMessage, 0, len(history)+1)
 
-	// System prompt is always first in OpenAI's format
 	if systemPrompt != "" {
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleSystem,
@@ -154,16 +153,13 @@ func buildOpenAIMessages(systemPrompt string, history []memory.Message) []openai
 
 		case "user":
 			if msg.ToolCall == nil {
-				// Plain user message
 				messages = append(messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleUser,
 					Content: msg.Content,
 				})
 				continue
 			}
-
-			// Tool result — OpenAI uses role "tool" with a ToolCallID
-			// The ToolCallID must match the ID from the assistant's tool_calls
+			// Single tool result
 			messages = append(messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
 				Content:    msg.ToolCall.Output,
@@ -171,8 +167,28 @@ func buildOpenAIMessages(systemPrompt string, history []memory.Message) []openai
 			})
 
 		case "assistant":
+			// Multi-tool batch: one assistant message with all tool_calls entries
+			if len(msg.ToolCalls) > 0 {
+				openAIToolCalls := make([]openai.ToolCall, 0, len(msg.ToolCalls))
+				for _, tc := range msg.ToolCalls {
+					openAIToolCalls = append(openAIToolCalls, openai.ToolCall{
+						ID:   tc.ID,
+						Type: openai.ToolTypeFunction,
+						Function: openai.FunctionCall{
+							Name:      tc.ToolName,
+							Arguments: tc.Input,
+						},
+					})
+				}
+				messages = append(messages, openai.ChatCompletionMessage{
+					Role:      openai.ChatMessageRoleAssistant,
+					Content:   "",
+					ToolCalls: openAIToolCalls,
+				})
+				continue
+			}
+
 			if msg.ToolCall == nil {
-				// Plain assistant text response
 				messages = append(messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: msg.Content,
@@ -180,8 +196,7 @@ func buildOpenAIMessages(systemPrompt string, history []memory.Message) []openai
 				continue
 			}
 
-			// Assistant requesting a tool call
-			// OpenAI uses a ToolCalls array on the assistant message
+			// Single tool call request
 			messages = append(messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: "",
@@ -259,8 +274,8 @@ func buildOpenAITools(schemas map[string]tools.Schema) []openai.Tool {
 // translateOpenAIResponse converts an OpenAI ChatCompletionResponse
 // into our clean Response type.
 //
-// OpenAI always returns at least one Choice. We read the first choice
-// and check whether the finish reason is "tool_calls" or "stop".
+// OpenAI returns tool calls as a ToolCalls array on the assistant message.
+// We collect all of them — the agent will execute them concurrently.
 func translateOpenAIResponse(resp openai.ChatCompletionResponse) Response {
 	result := Response{
 		Usage: TokenUsage{
@@ -269,7 +284,6 @@ func translateOpenAIResponse(resp openai.ChatCompletionResponse) Response {
 		},
 	}
 
-	// Guard — should never happen but protects against empty responses
 	if len(resp.Choices) == 0 {
 		result.FinishReason = "no_choices"
 		return result
@@ -278,19 +292,19 @@ func translateOpenAIResponse(resp openai.ChatCompletionResponse) Response {
 	choice := resp.Choices[0]
 	result.FinishReason = string(choice.FinishReason)
 
-	// Check if the model wants to call a tool
+	// Collect all tool calls from this response
 	if len(choice.Message.ToolCalls) > 0 {
-		toolCall := choice.Message.ToolCalls[0] // handle one tool per turn
-
-		result.ToolCall = &ToolCallRequest{
-			ID:       toolCall.ID,
-			ToolName: toolCall.Function.Name,
-			Input:    toolCall.Function.Arguments,
+		result.ToolCalls = make([]ToolCallRequest, 0, len(choice.Message.ToolCalls))
+		for _, tc := range choice.Message.ToolCalls {
+			result.ToolCalls = append(result.ToolCalls, ToolCallRequest{
+				ID:       tc.ID,
+				ToolName: tc.Function.Name,
+				Input:    tc.Function.Arguments,
+			})
 		}
 		return result
 	}
 
-	// No tool call — the model produced a text response
 	result.Content = choice.Message.Content
 	return result
 }

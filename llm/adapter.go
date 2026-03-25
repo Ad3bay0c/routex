@@ -73,7 +73,6 @@ type Request struct {
 	MaxTokens int
 
 	// Temperature controls how creative vs deterministic the LLM is.
-	// it should be between 0.0 and 1.0
 	// 0.0 = very focused and deterministic (good for planners, executors)
 	// 1.0 = more creative and varied (good for writers)
 	// Most agents work well at 0.7.
@@ -85,14 +84,16 @@ type Request struct {
 type Response struct {
 	// Content is the LLM's text response.
 	// Non-empty when the LLM is done thinking and has a final answer.
-	// Empty when the LLM wants to call a tool instead.
+	// Empty when the LLM wants to call one or more tools instead.
 	Content string
 
-	// ToolCall is non-nil when the LLM wants to call a tool.
-	// The agent should execute the tool, add the result to history,
-	// then call Complete() again. This loop continues until
-	// Content is non-empty — meaning the LLM is done.
-	ToolCall *ToolCallRequest
+	// ToolCalls is non-empty when the LLM wants to execute tools.
+	// The LLM may request several tools in a single response when they
+	// are independent of each other (e.g. web_search + read_file).
+	// The agent executes all of them concurrently, appends all results
+	// to history in one batch, then calls Complete() again.
+	// This loop continues until Content is non-empty.
+	ToolCalls []ToolCallRequest
 
 	// Usage records how many tokens were consumed in this call.
 	// Accumulated across all turns to populate Result.TokensUsed.
