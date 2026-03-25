@@ -29,9 +29,11 @@ import (
 //	  - name: "translate"
 //	    api_key: "env:DEEPL_API_KEY"
 type TranslateTool struct {
-	client  *http.Client
-	apiKey  string
-	freeAPI bool // free keys end in ":fx" and use api-free.deepl.com
+	client       *http.Client
+	apiKey       string
+	freeAPI      bool // free keys end in ":fx" and use api-free.deepl.com
+	deepLURL     string
+	freeDeepLURL string
 }
 
 type translateInput struct {
@@ -66,9 +68,11 @@ type deepLResponse struct {
 // Keys ending in ":fx" automatically use the free API endpoint.
 func Translate(apiKey string) *TranslateTool {
 	return &TranslateTool{
-		client:  &http.Client{Timeout: 15 * time.Second},
-		apiKey:  apiKey,
-		freeAPI: strings.HasSuffix(apiKey, ":fx"),
+		client:       &http.Client{Timeout: 15 * time.Second},
+		apiKey:       apiKey,
+		freeAPI:      strings.HasSuffix(apiKey, ":fx"),
+		deepLURL:     "https://api.deepl.com/v2/translate",
+		freeDeepLURL: "https://api-free.deepl.com/v2/translate",
 	}
 }
 
@@ -126,9 +130,9 @@ func (t *TranslateTool) Execute(ctx context.Context, input json.RawMessage) (jso
 	// — choose the right endpoint
 	// Free API keys (ending in :fx) use api-free.deepl.com
 	// Paid keys use api.deepl.com
-	endpoint := "https://api.deepl.com/v2/translate"
+	endpoint := t.deepLURL
 	if t.freeAPI {
-		endpoint = "https://api-free.deepl.com/v2/translate"
+		endpoint = t.freeDeepLURL
 	}
 
 	// — build the request

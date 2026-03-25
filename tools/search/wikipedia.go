@@ -30,6 +30,7 @@ import (
 type WikipediaTool struct {
 	client   *http.Client
 	language string
+	baseURL  string
 }
 
 // wikipediaInput is the JSON the LLM sends when calling this tool.
@@ -127,10 +128,13 @@ func (t *WikipediaTool) Execute(ctx context.Context, input json.RawMessage) (jso
 	// The /page/summary endpoint resolves redirects and disambiguation automatically.
 	// We replace spaces with underscores — Wikipedia's URL convention.
 	topic := strings.ReplaceAll(strings.TrimSpace(params.Topic), " ", "_")
+	baseURL := t.baseURL
+	if baseURL == "" {
+		baseURL = fmt.Sprintf("https://%s.wikipedia.org", lang)
+	}
 	apiURL := fmt.Sprintf(
-		"https://%s.wikipedia.org/api/rest_v1/page/summary/%s",
-		lang,
-		topic,
+		"%s/api/rest_v1/page/summary/%s",
+		baseURL, topic,
 	)
 
 	// — make the request

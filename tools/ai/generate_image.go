@@ -32,9 +32,10 @@ import (
 //	    api_key: "env:OPENAI_API_KEY"
 //	    base_dir: "./outputs/images"   # optional: where to save images
 type GenerateImageTool struct {
-	client  *http.Client
-	apiKey  string
-	baseDir string
+	client        *http.Client
+	apiKey        string
+	baseDir       string
+	openAiBaseURL string
 }
 
 type generateImageInput struct {
@@ -83,9 +84,10 @@ func GenerateImage(apiKey, baseDir string) *GenerateImageTool {
 		baseDir = "./outputs/images"
 	}
 	return &GenerateImageTool{
-		client:  &http.Client{Timeout: 60 * time.Second}, // generation can take 10-30s
-		apiKey:  apiKey,
-		baseDir: baseDir,
+		client:        &http.Client{Timeout: 60 * time.Second}, // generation can take 10-30s
+		apiKey:        apiKey,
+		baseDir:       baseDir,
+		openAiBaseURL: "https://api.openai.com",
 	}
 }
 
@@ -194,7 +196,7 @@ func (t *GenerateImageTool) Execute(ctx context.Context, input json.RawMessage) 
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		"https://api.openai.com/v1/images/generations",
+		t.openAiBaseURL+"/v1/images/generations",
 		bytes.NewReader(bodyBytes),
 	)
 	if err != nil {

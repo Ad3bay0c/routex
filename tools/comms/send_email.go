@@ -149,10 +149,11 @@ func (t *SendEmailTool) Execute(ctx context.Context, input json.RawMessage) (jso
 
 var _ tools.Tool = (*SendEmailTool)(nil)
 
-// ── Sendgrid provider ───────────────────────────────────────────────
+// ── Sendgrid provider ──────
 type sendGridProvider struct {
 	apiKey string
 	client *http.Client
+	url    string
 }
 
 func (p *sendGridProvider) name() string { return "sendgrid" }
@@ -180,8 +181,9 @@ func (p *sendGridProvider) send(ctx context.Context, to, subject, body string, i
 	}
 
 	bodyBytes, _ := json.Marshal(payload)
+	url := coalesce(p.url, "https://api.sendgrid.com/v3/mail/send")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api.sendgrid.com/v3/mail/send",
+		url,
 		bytes.NewReader(bodyBytes),
 	)
 	if err != nil {
@@ -209,11 +211,11 @@ func (p *sendGridProvider) send(ctx context.Context, to, subject, body string, i
 	}
 }
 
-// ── Resend provider ───────────────────────────────────────────────
-
+// ── Resend provider ───────
 type resendProvider struct {
 	apiKey string
 	client *http.Client
+	url    string
 }
 
 func (p *resendProvider) name() string { return "resend" }
@@ -235,8 +237,9 @@ func (p *resendProvider) send(ctx context.Context, to, subject, body string, isH
 	}
 
 	bodyBytes, _ := json.Marshal(payload)
+	url := coalesce(p.url, "https://api.resend.com/emails")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api.resend.com/emails",
+		url,
 		bytes.NewReader(bodyBytes),
 	)
 	if err != nil {
@@ -319,8 +322,9 @@ func (p *sendGridProvider) sendFrom(ctx context.Context, fromEmail, fromName, to
 	}
 
 	bodyBytes, _ := json.Marshal(payload)
+	url := coalesce(p.url, "https://api.sendgrid.com/v3/mail/send")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api.sendgrid.com/v3/mail/send",
+		url,
 		bytes.NewReader(bodyBytes),
 	)
 	if err != nil {
@@ -370,8 +374,9 @@ func (p *resendProvider) sendFrom(ctx context.Context, fromEmail, fromName, to, 
 	}
 
 	bodyBytes, _ := json.Marshal(payload)
+	url := coalesce(p.url, "https://api.resend.com/emails")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api.resend.com/emails",
+		url,
 		bytes.NewReader(bodyBytes),
 	)
 	if err != nil {
@@ -433,4 +438,11 @@ func init() {
 		}
 		return t, nil
 	})
+}
+
+func coalesce(s string, defaultVal string) string {
+	if s == "" {
+		return defaultVal
+	}
+	return s
 }

@@ -27,9 +27,10 @@ import (
 //	  - name: "summarise"
 //	    api_key: "env:ANTHROPIC_API_KEY"
 type SummariseTool struct {
-	client *http.Client
-	apiKey string
-	model  string
+	client           *http.Client
+	apiKey           string
+	model            string
+	anthropicBaseURL string
 }
 
 type summariseInput struct {
@@ -52,9 +53,10 @@ type summariseOutput struct {
 // Summarise returns a ready-to-use SummariseTool using the given Anthropic API key.
 func Summarise(apiKey string) *SummariseTool {
 	return &SummariseTool{
-		client: &http.Client{Timeout: 30 * time.Second},
-		apiKey: apiKey,
-		model:  "claude-haiku-4-5-20251001",
+		client:           &http.Client{Timeout: 30 * time.Second},
+		apiKey:           apiKey,
+		model:            "claude-haiku-4-5-20251001",
+		anthropicBaseURL: "https://api.anthropic.com",
 	}
 }
 
@@ -164,7 +166,7 @@ func (t *SummariseTool) Execute(ctx context.Context, input json.RawMessage) (jso
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		"https://api.anthropic.com/v1/messages",
+		t.anthropicBaseURL+"/v1/messages",
 		bytes.NewReader(bodyBytes),
 	)
 	if err != nil {

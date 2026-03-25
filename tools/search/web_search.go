@@ -29,7 +29,8 @@ func init() {
 type WebSearchTool struct {
 	// client is reused across calls — creating a new HTTP client
 	// on every search would be wasteful and slow
-	client *http.Client
+	client  *http.Client
+	baseURL string
 }
 
 // webSearchInput is the shape of JSON the LLM sends when calling this tool.
@@ -77,6 +78,7 @@ func WebSearch() *WebSearchTool {
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},
+		baseURL: "https://api.duckduckgo.com",
 	}
 }
 
@@ -136,7 +138,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (jso
 	// no_html=1 strips HTML tags from results
 	// skip_disambig=1 goes straight to results, skipping disambiguation pages
 	apiURL := fmt.Sprintf(
-		"https://api.duckduckgo.com/?q=%s&format=json&no_html=1&skip_disambig=1",
+		t.baseURL+"/?q=%s&format=json&no_html=1&skip_disambig=1",
 		url.QueryEscape(params.Query),
 	)
 

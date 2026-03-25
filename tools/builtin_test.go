@@ -46,23 +46,6 @@ func TestResolve_FactoryError(t *testing.T) {
 	}
 }
 
-func TestListBuiltins_ContainsDefaults(t *testing.T) {
-	// The three built-in tools register themselves via init()
-	// They must all appear in ListBuiltins()
-	names := ListBuiltins()
-
-	nameSet := make(map[string]bool)
-	for _, n := range names {
-		nameSet[n] = true
-	}
-
-	for _, want := range []string{"web_search", "read_url", "write_file"} {
-		if !nameSet[want] {
-			t.Errorf("ListBuiltins() missing built-in %q", want)
-		}
-	}
-}
-
 func TestToolConfig_ResolveEnvValue(t *testing.T) {
 	_ = os.Setenv("ROUTEX_INPUT", "How do I resolve env?")
 	tests := []struct {

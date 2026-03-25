@@ -30,6 +30,7 @@ type BraveSearchTool struct {
 	client     *http.Client
 	apiKey     string
 	maxResults int
+	baseURL    string
 }
 
 // braveSearchInput is the JSON the LLM sends when calling this tool.
@@ -74,6 +75,7 @@ func BraveSearch(apiKey string) *BraveSearchTool {
 		client:     &http.Client{Timeout: 15 * time.Second},
 		apiKey:     apiKey,
 		maxResults: 5,
+		baseURL:    "https://api.search.brave.com/res/v1/web/search",
 	}
 }
 
@@ -123,7 +125,7 @@ func (t *BraveSearchTool) Execute(ctx context.Context, input json.RawMessage) (j
 
 	// — build the Brave Search API URL
 	apiURL := fmt.Sprintf(
-		"https://api.search.brave.com/res/v1/web/search?q=%s&count=%d",
+		t.baseURL+"?q=%s&count=%d",
 		url.QueryEscape(params.Query),
 		params.MaxResults,
 	)
