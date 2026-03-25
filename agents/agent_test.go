@@ -31,6 +31,24 @@ func (b *blockingAdapter) Complete(ctx context.Context, _ llm.Request) (llm.Resp
 func (b *blockingAdapter) Model() string    { return "blocking_model" }
 func (b *blockingAdapter) Provider() string { return "mock_provider" }
 
+type delayedMockTool struct {
+	name   string
+	output string
+	delay  time.Duration
+	calls  int
+	mu     sync.Mutex
+}
+
+func (t *delayedMockTool) Name() string         { return t.name }
+func (t *delayedMockTool) Schema() tools.Schema { return tools.Schema{Description: "delayed mock"} }
+func (t *delayedMockTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+	time.Sleep(t.delay)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.calls++
+	return json.RawMessage(`"` + t.output + `"`), nil
+}
+
 // mockAdapter mocks LLM adapter.
 type mockAdapter struct {
 	mu        sync.Mutex
@@ -64,20 +82,30 @@ func textResponse(content string) llm.Response {
 	}
 }
 
-// toolCallResponse returns an LLM response requesting a tool call.
+// toolCallResponse returns an LLM response requesting a single tool call.
 func toolCallResponse(toolName, input string) llm.Response {
 	return llm.Response{
-		ToolCall: &llm.ToolCallRequest{
-			ID:       "tc_" + toolName,
-			ToolName: toolName,
-			Input:    input,
+		ToolCalls: []llm.ToolCallRequest{
+			{
+				ID:       "tc_" + toolName,
+				ToolName: toolName,
+				Input:    input,
+			},
 		},
 		FinishReason: "tool_use",
 		Usage:        llm.TokenUsage{InputTokens: 10, OutputTokens: 5},
 	}
 }
 
-// mockTool mocks tool calls.
+// multiToolCallResponse returns an LLM response requesting multiple tools at once.
+func multiToolCallResponse(calls ...llm.ToolCallRequest) llm.Response {
+	return llm.Response{
+		ToolCalls:    calls,
+		FinishReason: "tool_use",
+		Usage:        llm.TokenUsage{InputTokens: 10, OutputTokens: 5},
+	}
+}
+
 type mockTool struct {
 	name   string
 	output string
@@ -243,6 +271,65 @@ func TestAgent_ToolCallThenTextResponse(t *testing.T) {
 	}
 	if tool.calls != 1 {
 		t.Errorf("tool.calls = %d, want 1", tool.calls)
+	}
+}
+
+func TestAgent_MultiToolBatch_RunsConcurrently(t *testing.T) {
+	const toolDelay = 50 * time.Millisecond
+
+	search := &delayedMockTool{name: "web_search", output: "search-result", delay: toolDelay}
+	readF := &delayedMockTool{name: "read_file", output: "file-result", delay: toolDelay}
+	wiki := &delayedMockTool{name: "wikipedia", output: "wiki-result", delay: toolDelay}
+
+	adapter := &mockAdapter{
+		responses: []llm.Response{
+			multiToolCallResponse(
+				llm.ToolCallRequest{ID: "id1", ToolName: "web_search", Input: `{"query":"Go"}`},
+				llm.ToolCallRequest{ID: "id2", ToolName: "read_file", Input: `{"path":"f.md"}`},
+				llm.ToolCallRequest{ID: "id3", ToolName: "wikipedia", Input: `{"topic":"Go"}`},
+			),
+			textResponse("all results gathered"),
+		},
+	}
+
+	ag := newTestAgent(t, adapter, search, readF, wiki)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go ag.Run(ctx)
+
+	start := time.Now()
+	ag.Inbox <- Message{RunID: "run-1", Input: "research Go"}
+	result := <-ag.Output()
+	elapsed := time.Since(start)
+
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+
+	// All three tools should have executed exactly once
+	if search.calls != 1 {
+		t.Errorf("web_search.calls = %d, want 1", search.calls)
+	}
+	if readF.calls != 1 {
+		t.Errorf("read_file.calls = %d, want 1", readF.calls)
+	}
+	if wiki.calls != 1 {
+		t.Errorf("wikipedia.calls = %d, want 1", wiki.calls)
+	}
+
+	// All three logged in result
+	if len(result.ToolCalls) != 3 {
+		t.Errorf("ToolCalls len = %d, want 3", len(result.ToolCalls))
+	}
+
+	// If sequential: elapsed ≥ 3 × toolDelay (~150ms)
+	// If concurrent: elapsed ≈ toolDelay (~50ms)
+	// We use 2× as the ceiling to give CI some breathing room
+	ceiling := toolDelay * 2
+	if elapsed > ceiling {
+		t.Errorf("elapsed %v > %v — tools likely ran sequentially (expected concurrent)",
+			elapsed.Round(time.Millisecond), ceiling)
 	}
 }
 

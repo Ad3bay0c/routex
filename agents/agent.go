@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Ad3bay0c/routex/llm"
@@ -325,119 +327,153 @@ func (a *Agent) think(ctx context.Context, msg Message) (string, []tools.ToolCal
 
 		totalTokens += resp.Usage.Total()
 
-		// ── LLM wants to call a tool ──────────────────────────────
-		if resp.ToolCall != nil {
-			tc := resp.ToolCall
+		// ── LLM returned tool calls — execute them ───────────────
+		if len(resp.ToolCalls) > 0 {
 
-			// ── Total tool call budget check ──────────────────────
-			// Even with varied inputs, an agent that makes 20+ tool
-			// calls in one turn is stuck. Intervene with a clear message.
-			if len(toolCallLog) >= maxTotalToolCalls {
-				a.logger.Warn("total tool call budget exceeded — redirecting LLM to produce final answer",
-					"tool", tc.ToolName,
-					"total_calls", len(toolCallLog),
-				)
-				redirectMsg := fmt.Sprintf(
-					"You have made %d tool calls in this turn which exceeds the allowed budget. "+
-						"Stop making tool calls. Use the information already gathered in your history "+
-						"and produce your final answer now.",
-					len(toolCallLog),
+			// ── Total budget check ────────────────────────────────
+			// Check before executing the batch. Count each call individually
+			// against the budget — a batch of 3 costs 3 budget units.
+			if len(toolCallLog)+len(resp.ToolCalls) > maxTotalToolCalls {
+				a.logger.Warn("total tool call budget exceeded — redirecting LLM",
+					"requested", len(resp.ToolCalls),
+					"used", len(toolCallLog),
+					"budget", maxTotalToolCalls,
 				)
 				_ = a.mem.Append(ctx, histKey, memory.Message{
 					Role:      "user",
-					Content:   redirectMsg,
+					Content:   fmt.Sprintf("You have used %d of your %d tool call budget. Stop calling tools and produce your final answer now using the information already gathered.", len(toolCallLog), maxTotalToolCalls),
 					Timestamp: time.Now(),
 				})
 				continue
 			}
 
-			// ── Duplicate tool call check ─────────────────────────
-			// Track how many times this exact tool+input pair has been called.
-			// Same tool with different input is fine — that is genuine exploration.
-			// Same tool with same input is a loop.
-			callKey := tc.ToolName + "||" + tc.Input
-			toolCallCounts[callKey]++
-			callCount := toolCallCounts[callKey]
+			// ── Duplicate check — filter before executing ─────────
+			// Build the list of calls that will actually run.
+			// Calls that exceed their duplicate limit get a redirect
+			// message instead — the batch continues without them.
+			var toExecute []llm.ToolCallRequest
+			var redirectMessages []string
 
-			if callCount > maxDuplicateCalls {
-				// Third or more identical call — the LLM is looping.
-				// Inject a redirect message instead of executing the tool.
-				// The message appears as a user turn so the LLM reads it
-				// on the next iteration and is forced to reconsider.
-				a.logger.Warn("duplicate tool call detected — redirecting LLM",
-					"tool", tc.ToolName,
-					"call_count", callCount,
-				)
-				redirectMsg := fmt.Sprintf(
-					"You have already called %q with the same input %d times. "+
-						"The results are already in your conversation history — do not call it again. "+
-						"Use the existing results and proceed to produce your final answer.",
-					tc.ToolName, callCount-1,
-				)
+			for _, tc := range resp.ToolCalls {
+				callKey := tc.ToolName + "||" + tc.Input
+				toolCallCounts[callKey]++
+				count := toolCallCounts[callKey]
+
+				if count > maxDuplicateCalls {
+					a.logger.Warn("duplicate tool call in batch — skipping",
+						"tool", tc.ToolName,
+						"count", count,
+					)
+					redirectMessages = append(redirectMessages,
+						fmt.Sprintf("You have already called %q with the same input %d times — do not call it again.", tc.ToolName, count-1),
+					)
+					continue
+				}
+				toExecute = append(toExecute, tc)
+			}
+
+			// If all calls in the batch were duplicates, inject redirect and continue
+			if len(toExecute) == 0 {
 				_ = a.mem.Append(ctx, histKey, memory.Message{
 					Role:      "user",
-					Content:   redirectMsg,
+					Content:   strings.Join(redirectMessages, " ") + " Use the results already in your history.",
 					Timestamp: time.Now(),
 				})
 				continue
 			}
 
-			a.logger.Info("tool call requested",
-				"tool", tc.ToolName,
-				"input", tc.Input,
-				"call_count", callCount,
+			a.logger.Info("executing tool batch",
+				"count", len(toExecute),
+				"tools", toolNames(toExecute),
 			)
 
+			// ── Append assistant message with all tool_use blocks.
+			assistantToolCalls := make([]memory.ToolCallRecord, 0, len(toExecute))
+			for _, tc := range toExecute {
+				assistantToolCalls = append(assistantToolCalls, memory.ToolCallRecord{
+					ID:       tc.ID,
+					ToolName: tc.ToolName,
+					Input:    tc.Input,
+				})
+			}
 			if err := a.mem.Append(ctx, histKey, memory.Message{
 				Role:      "assistant",
 				Timestamp: time.Now(),
-				ToolCall: &memory.ToolCallRecord{
-					ToolName: tc.ToolName,
-					Input:    tc.Input,
-				},
+				ToolCalls: assistantToolCalls,
 			}); err != nil {
-				return "", toolCallLog, totalTokens, fmt.Errorf("append tool request: %w", err)
+				return "", toolCallLog, totalTokens, fmt.Errorf("append tool batch request: %w", err)
 			}
 
-			toolStart := time.Now()
-
-			// Start a span for this tool call — closed when execution returns
-			toolCtx, finishTool := a.tracer.StartToolCall(ctx, tc.ToolName, tc.Input)
-			output, toolErr := a.registry.Execute(toolCtx, tc.ToolName, json.RawMessage(tc.Input))
-			toolDuration := time.Since(toolStart)
-
-			// Record output or error string for the span and metrics
-			outputStr := string(output)
-			finishTool(outputStr, toolErr)
-			a.metrics.RecordToolCall(tc.ToolName, toolDuration, toolErr)
-
-			toolResult := tools.ToolCall{
-				ToolName: tc.ToolName,
-				Input:    tc.Input,
-				Duration: toolDuration,
+			// ── Execute all tools concurrently ────────────────────
+			type toolResult struct {
+				tc     llm.ToolCallRequest
+				output json.RawMessage
+				err    error
+				dur    time.Duration
 			}
 
-			if toolErr != nil {
-				a.logger.Warn("tool call failed", "tool", tc.ToolName, "error", toolErr)
-				toolResult.Error = toolErr
-				output = json.RawMessage(fmt.Sprintf(`{"error":%q}`, toolErr.Error()))
-			} else {
-				toolResult.Output = outputStr
+			results := make([]toolResult, len(toExecute))
+			var wg sync.WaitGroup
+
+			for i, tc := range toExecute {
+				wg.Add(1)
+				go func(i int, tc llm.ToolCallRequest) {
+					defer wg.Done()
+					start := time.Now()
+					toolCtx, finishTool := a.tracer.StartToolCall(ctx, tc.ToolName, tc.Input)
+					out, execErr := a.registry.Execute(toolCtx, tc.ToolName, json.RawMessage(tc.Input))
+					duration := time.Since(start)
+					finishTool(string(out), execErr)
+					a.metrics.RecordToolCall(tc.ToolName, duration, execErr)
+					results[i] = toolResult{tc: tc, output: out, err: execErr, dur: duration}
+				}(i, tc)
 			}
 
-			toolCallLog = append(toolCallLog, toolResult)
+			wg.Wait()
 
-			if err := a.mem.Append(ctx, histKey, memory.Message{
-				Role:      "user",
-				Timestamp: time.Now(),
-				ToolCall: &memory.ToolCallRecord{
-					ToolName: tc.ToolName,
-					Input:    tc.Input,
-					Output:   string(output),
-					Error:    errorString(toolErr),
-				},
-			}); err != nil {
-				return "", toolCallLog, totalTokens, fmt.Errorf("append tool result: %w", err)
+			// ── Append one tool_result message per result ─────────
+			// Then append to toolCallLog. Order matches toExecute.
+			for _, r := range results {
+				outputStr := string(r.output)
+				logEntry := tools.ToolCall{
+					ToolName: r.tc.ToolName,
+					Input:    r.tc.Input,
+					Duration: r.dur,
+				}
+
+				if r.err != nil {
+					a.logger.Warn("tool call failed", "tool", r.tc.ToolName, "error", r.err)
+					logEntry.Error = r.err
+					r.output = json.RawMessage(fmt.Sprintf(`{"error":%q}`, r.err.Error()))
+					outputStr = string(r.output)
+				} else {
+					logEntry.Output = outputStr
+				}
+
+				toolCallLog = append(toolCallLog, logEntry)
+
+				if err := a.mem.Append(ctx, histKey, memory.Message{
+					Role:      "user",
+					Timestamp: time.Now(),
+					ToolCall: &memory.ToolCallRecord{
+						ID:       r.tc.ID,
+						ToolName: r.tc.ToolName,
+						Input:    r.tc.Input,
+						Output:   outputStr,
+						Error:    errorString(r.err),
+					},
+				}); err != nil {
+					return "", toolCallLog, totalTokens, fmt.Errorf("append tool result: %w", err)
+				}
+			}
+
+			// Inject any duplicate redirect messages after the results
+			for _, msg := range redirectMessages {
+				_ = a.mem.Append(ctx, histKey, memory.Message{
+					Role:      "user",
+					Content:   msg,
+					Timestamp: time.Now(),
+				})
 			}
 
 			continue
@@ -490,4 +526,13 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// toolNames returns a comma-separated list of tool names for logging.
+func toolNames(calls []llm.ToolCallRequest) string {
+	names := make([]string, len(calls))
+	for i, tc := range calls {
+		names[i] = tc.ToolName
+	}
+	return strings.Join(names, ", ")
 }
