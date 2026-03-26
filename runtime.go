@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ import (
 	"github.com/Ad3bay0c/routex/memory"
 	"github.com/Ad3bay0c/routex/observe"
 	"github.com/Ad3bay0c/routex/tools"
+	"github.com/Ad3bay0c/routex/tools/mcp"
 
 	// Blank imports trigger each sub-package's init() functions,
 	// registering their built-in tool factories automatically.
@@ -245,6 +247,8 @@ func (rt *Runtime) ExecutionPlan() [][]AgentPlanEntry {
 
 // autoRegisterTools walks the ToolConfigs from the YAML and tries to
 // instantiate each one from the built-in registry.
+// MCP server entries (name == "mcp") are handled separately — they connect
+// to a remote server and register all tools it exposes.
 // Tools already manually registered via RegisterTool() are skipped —
 // manual registration always wins over auto-discovery.
 func (rt *Runtime) autoRegisterTools() error {
@@ -253,6 +257,39 @@ func (rt *Runtime) autoRegisterTools() error {
 			rt.logger.Debug("tool already registered manually, skipping auto-discovery",
 				"tool", cfg.Name,
 			)
+			continue
+		}
+
+		// A tool named "mcp" is a special entry that connects to an
+		// external MCP server and registers all tools it exposes.
+		if cfg.Name == "mcp" {
+			serverURL := cfg.Extra["server_url"]
+			if serverURL == "" {
+				return fmt.Errorf("mcp tool entry missing required extra.server_url")
+			}
+			serverName := cfg.Extra["server_name"]
+			if serverName == "" {
+				serverName = serverURL
+			}
+
+			// Collect header_* keys from extra: — same pattern as http_request.
+			headers := make(map[string]string)
+			for k, v := range cfg.Extra {
+				if strings.HasPrefix(k, "header_") {
+					headerName := strings.TrimPrefix(k, "header_")
+					headers[headerName] = v
+				}
+			}
+
+			ctx := context.Background()
+			_, err := mcp.RegisterServer(ctx, mcp.ServerConfig{
+				ServerURL:  serverURL,
+				ServerName: serverName,
+				Headers:    headers,
+			}, rt.registry, rt.logger)
+			if err != nil {
+				return fmt.Errorf("connect to MCP server %q: %w", serverName, err)
+			}
 			continue
 		}
 

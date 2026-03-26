@@ -317,6 +317,19 @@ func buildConfig(raw yamlFile) (Config, error) {
 		for k, v := range t.Extra {
 			resolvedExtra[k] = env(v)
 		}
+
+		// Validate MCP server entries at config time
+		if env(t.Name) == "mcp" {
+			if resolvedExtra["server_url"] == "" {
+				return cfg, fmt.Errorf(
+					"tools: mcp entry is missing required extra.server_url\n" +
+						"  add to agents.yaml:\n" +
+						"    extra:\n" +
+						"      server_url: \"http://your-mcp-server:3000\"",
+				)
+			}
+		}
+
 		cfg.ToolConfigs = append(cfg.ToolConfigs, tools.ToolConfig{
 			Name:       env(t.Name),
 			APIKey:     env(t.APIKey),
@@ -349,7 +362,7 @@ func buildConfig(raw yamlFile) (Config, error) {
 		if !role.IsValid() {
 			return cfg, fmt.Errorf(
 				"agents[%d] %q: unknown role %q — valid roles: planner, writer, critic, executor, researcher",
-				i, id, a.Role,
+				i, id, role,
 			)
 		}
 

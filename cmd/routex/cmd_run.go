@@ -128,7 +128,6 @@ func runCommand(args []string) error {
 		}
 	}()
 
-	// print run header
 	if jsonOut != "true" {
 		printRunHeader(configPath, rt.GetTask())
 	}
@@ -139,7 +138,6 @@ func runCommand(args []string) error {
 
 	rt.Stop()
 
-	// output
 	if jsonOut == "true" {
 		return printResultJSON(result, runErr)
 	}
@@ -275,5 +273,8 @@ func printExecutionPlan(rt *routex.Runtime, configPath string) error {
 
 	fmt.Println()
 	fmt.Println("Config is valid. Run without --dry-run to execute.")
+	fmt.Println()
+	fmt.Println("Note: MCP tools are not verified during dry-run — the server")
+	fmt.Println("is contacted only when 'routex run' actually starts.")
 	return nil
 }

@@ -121,6 +121,12 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return t, ok
 }
 
+// Has reports whether a tool with the given name is registered.
+func (r *Registry) Has(name string) bool {
+	_, ok := r.tools[name]
+	return ok
+}
+
 // List returns the names of all registered tools.
 // The runtime passes these to the LLM at the start of each agent run
 // so the model knows what it has available.

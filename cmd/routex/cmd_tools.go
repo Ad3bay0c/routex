@@ -115,5 +115,9 @@ func toolsListCommandTo(out io.Writer, args []string) error {
 	fmt.Fprintln(out, "Configure any tool in agents.yaml under the tools: section.")
 	fmt.Fprintln(out, "See https://github.com/Ad3bay0c/routex for configuration details.")
 	fmt.Fprintln(out)
+	fmt.Fprintln(out, "MCP tools are discovered at runtime by connecting to the MCP server.")
+	fmt.Fprintln(out, "They do not appear here — run 'routex run agents.yaml --dry-run' to")
+	fmt.Fprintln(out, "see which tools are available after the server connection is made.")
+	fmt.Fprintln(out)
 	return nil
 }
