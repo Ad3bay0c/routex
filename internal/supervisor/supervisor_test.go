@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 	"testing"
 	"time"
 
@@ -24,112 +23,71 @@ func (w testLogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// mockAdapter mocks LLM adapter.
-type mockAdapter struct {
-	mu        sync.Mutex
-	responses []llm.Response
-	errors    []error
-	calls     int
+type noopAdapter struct{}
+
+func (a *noopAdapter) Complete(ctx context.Context, _ llm.Request) (llm.Response, error) {
+	// Block until context is cancelled — simulates an agent waiting for work.
+	<-ctx.Done()
+	return llm.Response{}, ctx.Err()
+}
+func (a *noopAdapter) Model() string    { return "noop" }
+func (a *noopAdapter) Provider() string { return "mock" }
+
+func newTestAgent(t *testing.T, id string) *agents.Agent {
+	t.Helper()
+	mem := memory.NewInMemStore()
+	t.Cleanup(func() { mem.Close() })
+
+	logger := slog.New(slog.NewTextHandler(testLogWriter{t}, nil))
+	cfg := agents.Config{
+		ID:      id,
+		Role:    agents.Researcher,
+		Goal:    "test",
+		Timeout: 5 * time.Second,
+	}
+	return agents.New(cfg, &noopAdapter{}, mem, tools.NewRegistry(), logger, nil, nil)
 }
 
-func (m *mockAdapter) Complete(_ context.Context, _ llm.Request) (llm.Response, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	i := m.calls
-	m.calls++
-	if i < len(m.errors) && m.errors[i] != nil {
-		return llm.Response{}, m.errors[i]
-	}
-	if i < len(m.responses) {
-		return m.responses[i], nil
-	}
-	return llm.Response{}, nil
-}
-func (m *mockAdapter) Model() string    { return "mock-model" }
-func (m *mockAdapter) Provider() string { return "mock-provider" }
-
-// supervisorFailureReport builds a FailureReport.
-func supervisorFailureReport(agentID string, err error, reply chan Decision) FailureReport {
-	return FailureReport{
-		AgentID: agentID,
-		Err:     err,
-		Reply:   reply,
-	}
-}
-
-// newTestSupervisor creates a Supervisor with default limits for testing.
-func newTestSupervisor(t *testing.T, agentList []*agents.Agent) *Supervisor {
+func newTestSupervisor(t *testing.T, agentList []*agents.Agent) (*Supervisor, context.CancelFunc) {
 	t.Helper()
 	return newTestSupervisorWithLimits(t, agentList, 3, time.Minute)
 }
 
-// newTestSupervisorWithLimits creates a Supervisor with custom restart limits.
 func newTestSupervisorWithLimits(
 	t *testing.T,
 	agentList []*agents.Agent,
 	maxRestarts int,
 	window time.Duration,
-) *Supervisor {
+) (*Supervisor, context.CancelFunc) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(testLogWriter{t}, nil))
-	return New(agentList, agents.OneForOne, maxRestarts, window, logger)
+	sup := New(agentList, agents.OneForOne, maxRestarts, window, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sup.Start(ctx)
+
+	t.Cleanup(func() {
+		cancel()
+		sup.Stop()
+	})
+
+	return sup, cancel
 }
 
-func newTestAgent(t *testing.T, adapter llm.Adapter, toolList ...tools.Tool) *agents.Agent {
-	t.Helper()
-
-	mem := memory.NewInMemStore()
-	t.Cleanup(func() { mem.Close() })
-
-	reg := tools.NewRegistry()
-	for _, tool := range toolList {
-		reg.Register(tool)
-	}
-
-	cfg := agents.Config{
-		ID:         "test-agent",
-		Role:       agents.Researcher,
-		Goal:       "complete the test task",
-		MaxRetries: 0,
-		Timeout:    5 * time.Second,
-	}
-	if len(toolList) > 0 {
-		names := make([]string, len(toolList))
-		for i, tool := range toolList {
-			names[i] = tool.Name()
-		}
-		cfg.Tools = names
-	}
-
-	logger := slog.New(slog.NewTextHandler(testLogWriter{t}, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-
-	return agents.New(cfg, adapter, mem, reg, logger, nil, nil)
-}
-
-func newAgentConfig(id string) agents.Config {
-	return agents.Config{
-		ID:         id,
-		Role:       agents.Researcher,
-		Goal:       "complete the test task",
-		MaxRetries: 0,
-		Timeout:    5 * time.Second,
-	}
+func failureReport(agentID string, err error) (FailureReport, chan Decision) {
+	reply := make(chan Decision, 1)
+	return FailureReport{AgentID: agentID, Err: err, Reply: reply}, reply
 }
 
 func TestSupervisor_RestartsFailedAgent(t *testing.T) {
-	ag := newTestAgent(t, &mockAdapter{})
-	sup := newTestSupervisor(t, []*agents.Agent{ag})
+	ag := newTestAgent(t, "test-agent")
+	sup, _ := newTestSupervisor(t, []*agents.Agent{ag})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	sup.Start(ctx)
-	time.Sleep(30 * time.Millisecond) // let goroutines start
+	// Give goroutines time to start
+	time.Sleep(30 * time.Millisecond)
 
-	// Report a failure
-	replyCh := make(chan supervisorDecision, 1)
-	sup.FailureReports <- supervisorFailureReport(ag.ID(), fmt.Errorf("llm timeout"), replyCh)
+	report, replyCh := failureReport("test-agent", fmt.Errorf("llm timeout"))
+	sup.FailureReports <- report
 
 	select {
 	case decision := <-replyCh:
@@ -139,8 +97,8 @@ func TestSupervisor_RestartsFailedAgent(t *testing.T) {
 		if decision.Err != nil {
 			t.Errorf("Err = %v, want nil", decision.Err)
 		}
-		if decision.AgentID != ag.ID() {
-			t.Errorf("AgentID = %q, want %q", decision.AgentID, ag.ID())
+		if decision.AgentID != "test-agent" {
+			t.Errorf("AgentID = %q, want %q", decision.AgentID, "test-agent")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for supervisor decision")
@@ -148,31 +106,26 @@ func TestSupervisor_RestartsFailedAgent(t *testing.T) {
 }
 
 func TestSupervisor_ExhaustsRestartBudget(t *testing.T) {
-	ag := newTestAgent(t, &mockAdapter{})
-
+	ag := newTestAgent(t, "test-agent")
 	// maxRestarts=2 → budget exhausted after 2 restarts
-	sup := newTestSupervisorWithLimits(t, []*agents.Agent{ag}, 2, time.Minute)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	sup.Start(ctx)
+	sup, _ := newTestSupervisorWithLimits(t, []*agents.Agent{ag}, 2, time.Minute)
 	time.Sleep(30 * time.Millisecond)
 
-	// Consume both allowed restarts
+	// Consume the allowed restarts
 	for i := 0; i < 2; i++ {
-		r := make(chan supervisorDecision, 1)
-		sup.FailureReports <- supervisorFailureReport(ag.ID(), fmt.Errorf("fail %d", i), r)
-		<-r
+		report, replyCh := failureReport("test-agent", fmt.Errorf("fail %d", i))
+		sup.FailureReports <- report
+		<-replyCh
 	}
 
-	// Third failure — budget exhausted
-	r := make(chan supervisorDecision, 1)
-	sup.FailureReports <- supervisorFailureReport(ag.ID(), fmt.Errorf("fail 3"), r)
+	// Third failure — budget gone
+	report, replyCh := failureReport("test-agent", fmt.Errorf("fail 3"))
+	sup.FailureReports <- report
 
 	select {
-	case decision := <-r:
+	case decision := <-replyCh:
 		if decision.Retry {
-			t.Error("Retry = true, want false (budget exhausted)")
+			t.Error("Retry = true after budget exhausted, want false")
 		}
 		if decision.Err == nil {
 			t.Error("Err should be non-nil when budget exhausted")
@@ -183,20 +136,15 @@ func TestSupervisor_ExhaustsRestartBudget(t *testing.T) {
 }
 
 func TestSupervisor_RestartWindowSlides(t *testing.T) {
-	ag := newTestAgent(t, &mockAdapter{})
-
+	ag := newTestAgent(t, "test-agent")
 	// 1 restart within a 100ms window
-	sup := newTestSupervisorWithLimits(t, []*agents.Agent{ag}, 1, 100*time.Millisecond)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	sup.Start(ctx)
+	sup, _ := newTestSupervisorWithLimits(t, []*agents.Agent{ag}, 1, 100*time.Millisecond)
 	time.Sleep(30 * time.Millisecond)
 
 	// First failure — should retry (1 within window)
-	r1 := make(chan supervisorDecision, 1)
-	sup.FailureReports <- supervisorFailureReport(ag.ID(), fmt.Errorf("fail 1"), r1)
-	d1 := <-r1
+	r1, rch1 := failureReport("test-agent", fmt.Errorf("fail 1"))
+	sup.FailureReports <- r1
+	d1 := <-rch1
 	if !d1.Retry {
 		t.Fatal("first failure should retry")
 	}
@@ -204,44 +152,53 @@ func TestSupervisor_RestartWindowSlides(t *testing.T) {
 	// Wait for the window to expire
 	time.Sleep(120 * time.Millisecond)
 
-	// Second failure after window — fresh window, should retry again
-	r2 := make(chan supervisorDecision, 1)
-	sup.FailureReports <- supervisorFailureReport(ag.ID(), fmt.Errorf("fail 2"), r2)
-	d2 := <-r2
+	// Second failure — fresh window, should retry again
+	r2, rch2 := failureReport("test-agent", fmt.Errorf("fail 2"))
+	sup.FailureReports <- r2
+	d2 := <-rch2
 	if !d2.Retry {
 		t.Error("second failure after window expiry should retry (window reset)")
 	}
 }
 
 func TestSupervisor_MultipleAgentsIndependent(t *testing.T) {
-	// With OneForOne policy, failing agent-1 should not affect agent-2
-	agent1 := newTestAgent(t, &mockAdapter{})
-	agent1.SetConfig(newAgentConfig("agent-1"))
+	ag1 := newTestAgent(t, "agent-1")
+	ag2 := newTestAgent(t, "agent-2")
 
-	agent2 := newTestAgent(t, &mockAdapter{})
-	agent2.SetConfig(newAgentConfig("agent-2"))
-
-	sup := newTestSupervisor(t, []*agents.Agent{agent1, agent2})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	sup.Start(ctx)
+	sup, _ := newTestSupervisor(t, []*agents.Agent{ag1, ag2})
 	time.Sleep(30 * time.Millisecond)
 
-	// Only report agent1 as failed
-	r := make(chan supervisorDecision, 1)
-	sup.FailureReports <- supervisorFailureReport("agent-1", fmt.Errorf("fail"), r)
+	// Fail only agent-1
+	report, replyCh := failureReport("agent-1", fmt.Errorf("fail"))
+	sup.FailureReports <- report
 
-	decision := <-r
+	decision := <-replyCh
 	if !decision.Retry {
 		t.Error("agent-1 should retry")
 	}
 
-	// agent2's inbox should still be accepting messages (not restarted)
+	// ag2's inbox should still be open (not restarted / not blocked)
 	select {
-	case agent2.Inbox <- agents.Message{RunID: "r", Input: "ping"}:
-		// good — agent2 goroutine is alive and inbox not blocked
+	case ag2.Inbox <- agents.Message{RunID: "r", Input: "ping"}:
+		// good
 	default:
-		t.Error("ag2 inbox is full — was it incorrectly restarted?")
+		t.Error("ag2 inbox full — was it incorrectly restarted?")
+	}
+}
+
+func TestSupervisor_StartsAllAgents(t *testing.T) {
+	ag1 := newTestAgent(t, "agent-1")
+	ag2 := newTestAgent(t, "agent-2")
+
+	_, _ = newTestSupervisor(t, []*agents.Agent{ag1, ag2})
+	time.Sleep(50 * time.Millisecond)
+
+	// Both agents' inboxes should be live
+	for _, ag := range []*agents.Agent{ag1, ag2} {
+		select {
+		case ag.Inbox <- agents.Message{RunID: "r", Input: "ping"}:
+		default:
+			t.Errorf("agent %s inbox blocked — goroutine may not have started", ag.ID())
+		}
 	}
 }
