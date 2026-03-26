@@ -19,15 +19,6 @@ import (
 	"github.com/Ad3bay0c/routex/observe"
 	"github.com/Ad3bay0c/routex/tools"
 	"github.com/Ad3bay0c/routex/tools/mcp"
-
-	// Blank imports trigger each sub-package's init() functions,
-	// registering their built-in tool factories automatically.
-	// Add a new line here whenever a new tool sub-package is created.
-	_ "github.com/Ad3bay0c/routex/tools/ai"
-	_ "github.com/Ad3bay0c/routex/tools/comms"
-	_ "github.com/Ad3bay0c/routex/tools/file"
-	_ "github.com/Ad3bay0c/routex/tools/search"
-	_ "github.com/Ad3bay0c/routex/tools/web"
 )
 
 // Runtime is the heart of Routex.
@@ -247,10 +238,19 @@ func (rt *Runtime) ExecutionPlan() [][]AgentPlanEntry {
 
 // autoRegisterTools walks the ToolConfigs from the YAML and tries to
 // instantiate each one from the built-in registry.
+//
+// Built-in tools are only available if their sub-package has been imported
+// (directly or via tools/all). If a tool is listed in agents.yaml but its
+// sub-package was never imported, Resolve returns ErrToolNotBuiltin and a
+// warning is logged — the tool must then be registered manually via
+// RegisterTool(), or the appropriate sub-package must be imported.
+//
+//	import _ "github.com/Ad3bay0c/routex/tools/all"    // everything
+//	import _ "github.com/Ad3bay0c/routex/tools/file"   // just file tools
+//	import _ "github.com/Ad3bay0c/routex/tools/search" // just search tools
+//
 // MCP server entries (name == "mcp") are handled separately — they connect
 // to a remote server and register all tools it exposes.
-// Tools already manually registered via RegisterTool() are skipped —
-// manual registration always wins over auto-discovery.
 func (rt *Runtime) autoRegisterTools() error {
 	for _, cfg := range rt.cfg.ToolConfigs {
 		if _, ok := rt.registry.Get(cfg.Name); ok {
