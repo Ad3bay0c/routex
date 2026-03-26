@@ -1,0 +1,113 @@
+# ─────────────────────────────────────────────────────────────────
+# Routex example — Group 2: AI & Generation tools
+#
+# This crew researches a topic and produces:
+#   1. A summarised overview (summarise)
+#   2. A French translation of the summary (translate)
+#   3. A cover image for the report (generate_image)
+#   4. A final report combining all three (writer)
+#
+# Tools used:
+#   summarise       — needs ANTHROPIC_API_KEY
+#   translate       — needs DEEPL_API_KEY
+#   generate_image  — needs OPENAI_API_KEY
+#
+# Run:
+#   cp .env.example .env && fill in your keys
+#   go run .
+# ─────────────────────────────────────────────────────────────────
+
+runtime:
+  name:         "ai-generation-crew"
+  llm_provider: "anthropic"
+  model:        "claude-sonnet-4-6"
+  api_key:      "env:ANTHROPIC_API_KEY"
+  log_level:    "info"
+
+  # DEVELOPMENT ONLY — remove in production
+  env_file:     "."
+
+task:
+  input:        "The future of AI agents in software development"
+  output_file:  "outputs/final_report.md"
+  max_duration: "8m"
+
+tools:
+  # Summarise uses the same Anthropic key as the runtime
+  - name:    "summarise"
+    api_key: "env:ANTHROPIC_API_KEY"
+
+  # DeepL translation — free tier: 500k chars/month
+  - name:    "translate"
+    api_key: "env:DEEPL_API_KEY"
+
+  # DALL-E 3 image generation
+  - name:     "generate_image"
+    api_key:  "env:OPENAI_API_KEY"
+    base_dir: "./outputs/images"
+
+  # Writer saves the final report
+  - name:     "write_file"
+    base_dir: "./outputs"
+
+  # Researcher searches for source material
+  - name: "web_search"
+
+agents:
+
+  # 1. Research the topic
+  - id:          "researcher"
+    role:        "researcher"
+    goal:        "Search for 3-5 key facts and recent developments about the topic"
+    tools:       ["web_search"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+
+  # 2. Summarise the research into a tight overview
+  - id:          "summariser"
+    role:        "executor"
+    goal:        "Take the research findings and produce a clear 200-word summary paragraph"
+    tools:       ["summarise"]
+    depends_on:  ["researcher"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+
+  # 3. Translate the summary into French (runs in parallel with image_creator)
+  - id:          "translator"
+    role:        "executor"
+    goal:        "Translate the summary into French using DeepL"
+    tools:       ["translate"]
+    depends_on:  ["summariser"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "60s"
+
+  # 4. Generate a cover image (runs in parallel with translator)
+  - id:          "image_creator"
+    role:        "executor"
+    goal:        "Generate a professional cover image for the report. Save it as 'cover.png'"
+    tools:       ["generate_image"]
+    depends_on:  ["summariser"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "90s"
+
+  # 5. Assemble the final report
+  - id:          "writer"
+    role:        "writer"
+    goal:        "Write a final markdown report combining the English summary, French translation, and reference the cover image at outputs/images/cover.png"
+    tools:       ["write_file"]
+    depends_on:  ["translator", "image_creator"]
+    restart:     "one_for_one"
+    max_retries: 2
+    timeout:     "90s"
+
+memory:
+  backend: "inmem"
+  ttl:     "1h"
+
+observability:
+  tracing: false
+  metrics: false
