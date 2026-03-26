@@ -15,6 +15,12 @@ package main
 
 import (
 	"os"
+
+	// The CLI binary intentionally includes all built-in tools so that
+	// any agents.yaml can use any tool without the user needing to write
+	// Go code. Application code should import only the sub-packages it
+	// actually uses to keep binaries lean.
+	_ "github.com/Ad3bay0c/routex/tools/all"
 )
 
 func main() {

@@ -7,14 +7,6 @@ import (
 	"sort"
 
 	"github.com/Ad3bay0c/routex/tools"
-
-	// Import all sub-packages so their init() functions run and
-	// register their built-ins before we list them.
-	_ "github.com/Ad3bay0c/routex/tools/ai"
-	_ "github.com/Ad3bay0c/routex/tools/comms"
-	_ "github.com/Ad3bay0c/routex/tools/file"
-	_ "github.com/Ad3bay0c/routex/tools/search"
-	_ "github.com/Ad3bay0c/routex/tools/web"
 )
 
 const toolsUsage = `Usage:
