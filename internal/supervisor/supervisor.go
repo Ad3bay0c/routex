@@ -76,6 +76,7 @@ type Supervisor struct {
 	FailureReports chan FailureReport
 
 	mu     sync.Mutex
+	wg     sync.WaitGroup // tracks all goroutines started by this supervisor
 	logger *slog.Logger
 }
 
@@ -112,14 +113,24 @@ func New(
 // The supervisor's monitor goroutine is intentionally simple: if it
 // panics the process should crash loudly rather than silently recover.
 func (s *Supervisor) Start(ctx context.Context) {
-	go s.monitor(ctx)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.monitor(ctx)
+	}()
+}
+
+// Stop waits for the supervisor's monitor goroutine and all agent
+// goroutines it spawned to finish. Call after cancelling the context
+// passed to Start to avoid goroutine leaks and test races.
+func (s *Supervisor) Stop() {
+	s.wg.Wait()
 }
 
 // monitor starts all agents and watches two sources:
 //  1. FailureReports from the scheduler — handles with a restart decision
 //  2. ctx.Done() — shuts everything down cleanly
 func (s *Supervisor) monitor(ctx context.Context) {
-	// Build agent lookup and start all goroutines
 	agentsByID := make(map[string]*agents.Agent, len(s.agents))
 	cancelFns := make(map[string]context.CancelFunc, len(s.agents))
 
@@ -127,7 +138,11 @@ func (s *Supervisor) monitor(ctx context.Context) {
 		agentsByID[agent.ID()] = agent
 		agentCtx, cancel := context.WithCancel(ctx)
 		cancelFns[agent.ID()] = cancel
-		go agent.Run(agentCtx)
+		s.wg.Add(1)
+		go func(a *agents.Agent, c context.Context) {
+			defer s.wg.Done()
+			a.Run(c)
+		}(agent, agentCtx)
 		s.logger.Info("agent launched", "agent_id", agent.ID())
 	}
 
@@ -207,7 +222,6 @@ func (s *Supervisor) restartAgent(
 	agentsByID map[string]*agents.Agent,
 	cancelFns map[string]context.CancelFunc,
 ) {
-	// Cancel the old goroutine
 	if cancel, ok := cancelFns[agentID]; ok {
 		cancel()
 	}
@@ -221,7 +235,11 @@ func (s *Supervisor) restartAgent(
 	// Start a fresh goroutine with a new context
 	agentCtx, newCancel := context.WithCancel(ctx)
 	cancelFns[agentID] = newCancel
-	go failedAgent.Run(agentCtx)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		failedAgent.Run(agentCtx)
+	}()
 
 	s.logger.Info("agent restarted", "agent_id", agentID, "policy", s.policy)
 }
