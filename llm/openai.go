@@ -1,46 +1,111 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
-
-	"github.com/sashabaranov/go-openai"
 
 	"github.com/Ad3bay0c/routex/memory"
 	"github.com/Ad3bay0c/routex/tools"
 )
 
-// OpenAIAdapter implements the Adapter interface using the OpenAI API.
-// Also works with any OpenAI-compatible API — Groq, Together AI,
-// Mistral, and others all speak the same protocol.
-// Point BaseURL at the compatible endpoint and it just works.
+const openAIDefaultBaseURL = "https://api.openai.com/v1/chat/completions"
+
+// https://platform.openai.com/docs/api-reference/chat
+
+type openAIRequest struct {
+	Model               string          `json:"model"`
+	Messages            []openAIMessage `json:"messages"`
+	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
+	Temperature         float64         `json:"temperature,omitempty"`
+	Tools               []openAITool    `json:"tools,omitempty"`
+}
+
+type openAIMessage struct {
+	Role       string           `json:"role"`
+	Content    string           `json:"content,omitempty"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Name       string           `json:"name,omitempty"`
+}
+
+type openAIToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"` // always "function"
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"` // JSON string
+	} `json:"function"`
+}
+
+type openAITool struct {
+	Type     string            `json:"type"` // always "function"
+	Function openAIFunctionDef `json:"function"`
+}
+
+type openAIFunctionDef struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+type openAIResponse struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Model   string `json:"model"`
+	Choices []struct {
+		Index        int           `json:"index"`
+		Message      openAIMessage `json:"message"`
+		FinishReason string        `json:"finish_reason"`
+	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
+	Error *openAIError `json:"error,omitempty"`
+}
+
+type openAIError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    string `json:"code"`
+}
+
+func (e *openAIError) Error() string {
+	return fmt.Sprintf("openai %s: %s", e.Type, e.Message)
+}
+
+// OpenAIAdapter calls the OpenAI Chat Completions API directly over HTTP.
+// No SDK — just net/http and encoding/json. Zero third-party dependencies.
+//
+// Also works with any OpenAI-compatible API — Groq, Together AI, Mistral,
+// and others speak the same protocol. Point BaseURL at the endpoint:
+//
+//	Config{Provider: "openai", BaseURL: "https://api.groq.com/openai/v1/chat/completions"}
 type OpenAIAdapter struct {
-	client      *openai.Client
+	apiKey      string
+	baseURL     string
 	model       string
 	maxTokens   int
 	temperature float64
 	timeout     time.Duration
+	http        *http.Client
 }
 
 // NewOpenAIAdapter creates an OpenAI adapter from a Config.
-// Called by llm.New() when provider is "openai".
 func NewOpenAIAdapter(cfg Config) (*OpenAIAdapter, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("openai: api_key is required")
 	}
 
-	// go-openai uses a ClientConfig struct rather than functional options
-	clientCfg := openai.DefaultConfig(cfg.APIKey)
-
-	// Override the base URL if set — this is how you point at
-	// Groq, Together AI, or any other OpenAI-compatible provider
-	if cfg.BaseURL != "" {
-		clientCfg.BaseURL = cfg.BaseURL
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = openAIDefaultBaseURL
 	}
-
-	client := openai.NewClientWithConfig(clientCfg)
 
 	maxTokens := cfg.MaxTokens
 	if maxTokens == 0 {
@@ -58,92 +123,90 @@ func NewOpenAIAdapter(cfg Config) (*OpenAIAdapter, error) {
 	}
 
 	return &OpenAIAdapter{
-		client:      client,
+		apiKey:      cfg.APIKey,
+		baseURL:     baseURL,
 		model:       cfg.Model,
 		maxTokens:   maxTokens,
 		temperature: temperature,
 		timeout:     timeout,
+		http:        &http.Client{Timeout: timeout},
 	}, nil
 }
 
+func (a *OpenAIAdapter) Model() string    { return a.model }
+func (a *OpenAIAdapter) Provider() string { return "openai" }
+
 // Complete sends a conversation to OpenAI and returns the response.
-// Identical contract to AnthropicAdapter.Complete() — same six steps,
-// different SDK calls underneath.
-//
-// This satisfies the Adapter interface.
 func (a *OpenAIAdapter) Complete(ctx context.Context, req Request) (Response, error) {
-	// Apply per-call timeout
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	// Translate our history into OpenAI's message format
-	messages := buildOpenAIMessages(req.SystemPrompt, req.History)
-
-	// Translate our tool schemas into OpenAI's tool format
-	openAITools := buildOpenAITools(req.ToolSchemas)
-
-	// Choose effective token and temperature values
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = a.maxTokens
 	}
-
 	temperature := req.Temperature
 	if temperature == 0 {
 		temperature = a.temperature
 	}
 
-	// Build the API request
-	// OpenAI puts the system prompt inside the messages array
-	// as a message with role "system" — different from Anthropic
-	// which has a dedicated System field
-	chatReq := openai.ChatCompletionRequest{
+	apiReq := openAIRequest{
 		Model:               a.model,
-		Messages:            messages,
 		MaxCompletionTokens: maxTokens,
-		Temperature:         float32(temperature),
+		Temperature:         temperature,
+		Messages:            buildOpenAIMessages(req.SystemPrompt, req.History),
+		Tools:               buildOpenAITools(req.ToolSchemas),
 	}
 
-	// Only attach tools if there are any
-	if len(openAITools) > 0 {
-		chatReq.Tools = openAITools
-	}
-
-	// Make the API call
-	resp, err := a.client.CreateChatCompletion(ctx, chatReq)
+	body, err := json.Marshal(apiReq)
 	if err != nil {
-		return Response{}, fmt.Errorf("openai: api call failed: %w", err)
+		return Response{}, fmt.Errorf("openai: marshal request: %w", err)
 	}
 
-	// Translate OpenAI's response back into our Response type
-	return translateOpenAIResponse(resp), nil
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL, bytes.NewReader(body))
+	if err != nil {
+		return Response{}, fmt.Errorf("openai: build request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+a.apiKey)
+
+	httpResp, err := a.http.Do(httpReq)
+	if err != nil {
+		return Response{}, fmt.Errorf("openai: http: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return Response{}, fmt.Errorf("openai: read response: %w", err)
+	}
+
+	var apiResp openAIResponse
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return Response{}, fmt.Errorf("openai: decode response: %w", err)
+	}
+
+	if apiResp.Error != nil {
+		return Response{}, apiResp.Error
+	}
+	if httpResp.StatusCode != http.StatusOK {
+		return Response{}, fmt.Errorf("openai: HTTP %d: %s", httpResp.StatusCode, string(respBody))
+	}
+
+	return translateOpenAIResponse(apiResp), nil
 }
 
-// Model returns the model string this adapter is using.
-// This satisfies the Adapter interface.
-func (a *OpenAIAdapter) Model() string {
-	return a.model
-}
-
-// Provider returns "openai".
-// This satisfies the Adapter interface.
-func (a *OpenAIAdapter) Provider() string {
-	return "openai"
-}
-
-// buildOpenAIMessages converts our history into OpenAI's
-// []ChatCompletionMessage format.
+// buildOpenAIMessages converts []memory.Message into the OpenAI messages
+// array format. System prompt goes first as a "system" role message.
 //
-// Multi-tool batches: when an assistant message has ToolCalls,
-// we emit one assistant message with all tool_calls, followed by one
-// "tool" role message per result. OpenAI requires all results to be
-// present before the next assistant turn.
-func buildOpenAIMessages(systemPrompt string, history []memory.Message) []openai.ChatCompletionMessage {
-	messages := make([]openai.ChatCompletionMessage, 0, len(history)+1)
+// Multi-tool batches: one assistant message with all tool_calls entries,
+// followed by one "tool" role message per result.
+func buildOpenAIMessages(systemPrompt string, history []memory.Message) []openAIMessage {
+	msgs := make([]openAIMessage, 0, len(history)+1)
 
 	if systemPrompt != "" {
-		messages = append(messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleSystem,
+		msgs = append(msgs, openAIMessage{
+			Role:    "system",
 			Content: systemPrompt,
 		})
 	}
@@ -153,84 +216,70 @@ func buildOpenAIMessages(systemPrompt string, history []memory.Message) []openai
 
 		case "user":
 			if msg.ToolCall == nil {
-				messages = append(messages, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleUser,
+				msgs = append(msgs, openAIMessage{
+					Role:    "user",
 					Content: msg.Content,
 				})
 				continue
 			}
-			// Single tool result
-			messages = append(messages, openai.ChatCompletionMessage{
-				Role:       openai.ChatMessageRoleTool,
+			// Single tool result — role "tool" with ToolCallID
+			msgs = append(msgs, openAIMessage{
+				Role:       "tool",
 				Content:    msg.ToolCall.Output,
-				ToolCallID: msg.ToolCall.ToolName,
+				ToolCallID: msg.ToolCall.ID,
 			})
 
 		case "assistant":
-			// Multi-tool batch: one assistant message with all tool_calls entries
+			// Multi-tool batch — one assistant message with all tool_calls
 			if len(msg.ToolCalls) > 0 {
-				openAIToolCalls := make([]openai.ToolCall, 0, len(msg.ToolCalls))
+				calls := make([]openAIToolCall, 0, len(msg.ToolCalls))
 				for _, tc := range msg.ToolCalls {
-					openAIToolCalls = append(openAIToolCalls, openai.ToolCall{
-						ID:   tc.ID,
-						Type: openai.ToolTypeFunction,
-						Function: openai.FunctionCall{
-							Name:      tc.ToolName,
-							Arguments: tc.Input,
-						},
-					})
+					call := openAIToolCall{ID: tc.ID, Type: "function"}
+					call.Function.Name = tc.ToolName
+					call.Function.Arguments = tc.Input
+					calls = append(calls, call)
 				}
-				messages = append(messages, openai.ChatCompletionMessage{
-					Role:      openai.ChatMessageRoleAssistant,
-					Content:   "",
-					ToolCalls: openAIToolCalls,
+				msgs = append(msgs, openAIMessage{
+					Role:      "assistant",
+					ToolCalls: calls,
 				})
 				continue
 			}
 
-			if msg.ToolCall == nil {
-				messages = append(messages, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleAssistant,
-					Content: msg.Content,
+			if msg.ToolCall != nil {
+				// Single tool call request
+				call := openAIToolCall{ID: msg.ToolCall.ID, Type: "function"}
+				call.Function.Name = msg.ToolCall.ToolName
+				call.Function.Arguments = msg.ToolCall.Input
+				msgs = append(msgs, openAIMessage{
+					Role:      "assistant",
+					ToolCalls: []openAIToolCall{call},
 				})
 				continue
 			}
 
-			// Single tool call request
-			messages = append(messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: "",
-				ToolCalls: []openai.ToolCall{
-					{
-						ID:   msg.ToolCall.ToolName,
-						Type: openai.ToolTypeFunction,
-						Function: openai.FunctionCall{
-							Name:      msg.ToolCall.ToolName,
-							Arguments: msg.ToolCall.Input,
-						},
-					},
-				},
+			msgs = append(msgs, openAIMessage{
+				Role:    "assistant",
+				Content: msg.Content,
 			})
 		}
 	}
 
-	return messages
+	return msgs
 }
 
-// buildOpenAITools converts our tool schemas into OpenAI's
-// []Tool format. OpenAI wraps tools in a "function" type
-// with a separate "function" sub-object — more nested than Anthropic.
-func buildOpenAITools(schemas map[string]tools.Schema) []openai.Tool {
+// buildOpenAITools converts our tool schema map into OpenAI's tools
+// array format. Parameters are marshalled as a JSON Schema object.
+func buildOpenAITools(schemas map[string]tools.Schema) []openAITool {
 	if len(schemas) == 0 {
 		return nil
 	}
 
-	openAITools := make([]openai.Tool, 0, len(schemas))
+	result := make([]openAITool, 0, len(schemas))
 
 	for name, schema := range schemas {
-		// Build the parameters JSON schema
 		properties := make(map[string]any, len(schema.Parameters))
-		required := make([]string, 0)
+		var required []string
 
 		for paramName, param := range schema.Parameters {
 			properties[paramName] = map[string]any{
@@ -242,8 +291,6 @@ func buildOpenAITools(schemas map[string]tools.Schema) []openai.Tool {
 			}
 		}
 
-		// OpenAI requires the parameters as a JSON schema object
-		// marshalled then stored as a json.RawMessage
 		paramsSchema := map[string]any{
 			"type":       "object",
 			"properties": properties,
@@ -254,29 +301,25 @@ func buildOpenAITools(schemas map[string]tools.Schema) []openai.Tool {
 
 		paramsJSON, err := json.Marshal(paramsSchema)
 		if err != nil {
-			// If marshalling fails, use an empty schema rather than crashing
 			paramsJSON = []byte(`{"type":"object","properties":{}}`)
 		}
 
-		openAITools = append(openAITools, openai.Tool{
-			Type: openai.ToolTypeFunction,
-			Function: &openai.FunctionDefinition{
+		result = append(result, openAITool{
+			Type: "function",
+			Function: openAIFunctionDef{
 				Name:        name,
 				Description: schema.Description,
-				Parameters:  json.RawMessage(paramsJSON),
+				Parameters:  paramsJSON,
 			},
 		})
 	}
-
-	return openAITools
+	return result
 }
 
-// translateOpenAIResponse converts an OpenAI ChatCompletionResponse
-// into our clean Response type.
-//
-// OpenAI returns tool calls as a ToolCalls array on the assistant message.
-// We collect all of them — the agent will execute them concurrently.
-func translateOpenAIResponse(resp openai.ChatCompletionResponse) Response {
+// translateOpenAIResponse converts the OpenAI response into our clean
+// Response type. Collects all tool_calls so the agent can execute them
+// concurrently.
+func translateOpenAIResponse(resp openAIResponse) Response {
 	result := Response{
 		Usage: TokenUsage{
 			InputTokens:  resp.Usage.PromptTokens,
@@ -290,9 +333,8 @@ func translateOpenAIResponse(resp openai.ChatCompletionResponse) Response {
 	}
 
 	choice := resp.Choices[0]
-	result.FinishReason = string(choice.FinishReason)
+	result.FinishReason = choice.FinishReason
 
-	// Collect all tool calls from this response
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]ToolCallRequest, 0, len(choice.Message.ToolCalls))
 		for _, tc := range choice.Message.ToolCalls {

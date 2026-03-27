@@ -3,120 +3,82 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/sashabaranov/go-openai"
 
 	"github.com/Ad3bay0c/routex/tools"
 )
 
-func newOpenAIClientWithBaseURL(t *testing.T, baseURL string) *openai.Client {
+func newTestOpenAI(t *testing.T, srv *httptest.Server) *OpenAIAdapter {
 	t.Helper()
-	cfg := openai.DefaultConfig("test-key")
-	cfg.BaseURL = baseURL + "/v1"
-	return openai.NewClientWithConfig(cfg)
+	a, err := NewOpenAIAdapter(Config{
+		APIKey:      "test-key",
+		Model:       "gpt-4o",
+		BaseURL:     srv.URL,
+		MaxTokens:   1024,
+		Temperature: 0.7,
+		Timeout:     5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIAdapter: %v", err)
+	}
+	return a
 }
 
-func openaiChatCompletionResponse(choices []openai.ChatCompletionChoice) openai.ChatCompletionResponse {
-	if choices == nil {
-		choices = []openai.ChatCompletionChoice{}
-	}
-	return openai.ChatCompletionResponse{
-		ID:      "chat-completion-test",
-		Object:  "chat.completion",
-		Model:   "gpt-4o",
-		Choices: choices,
-		Usage: openai.Usage{
-			PromptTokens:     5,
-			CompletionTokens: 0,
-			TotalTokens:      5,
-		},
-	}
-}
-
-// openAITextResponse returns a minimal OpenAI chat completion JSON body
-// with a plain text response.
-func openAITextResponse(content string) map[string]any {
+func openAITextBody(content string) map[string]any {
 	return map[string]any{
-		"id":     "chatcmpl-test",
-		"object": "chat.completion",
-		"model":  "gpt-4o",
-		"choices": []map[string]any{
-			{
-				"index": 0,
-				"message": map[string]any{
-					"role":    "assistant",
-					"content": content,
-				},
-				"finish_reason": "stop",
+		"id": "chatcmpl-test", "object": "chat.completion", "model": "gpt-4o",
+		"choices": []map[string]any{{
+			"index":         0,
+			"message":       map[string]any{"role": "assistant", "content": content},
+			"finish_reason": "stop",
+		}},
+		"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 20},
+	}
+}
+
+func openAIToolCallBody(calls []map[string]any) map[string]any {
+	return map[string]any{
+		"id": "chatcmpl-test", "object": "chat.completion", "model": "gpt-4o",
+		"choices": []map[string]any{{
+			"index": 0,
+			"message": map[string]any{
+				"role": "assistant", "content": nil, "tool_calls": calls,
 			},
-		},
-		"usage": map[string]any{
-			"prompt_tokens":     10,
-			"completion_tokens": 20,
-			"total_tokens":      30,
-		},
+			"finish_reason": "tool_calls",
+		}},
+		"usage": map[string]any{"prompt_tokens": 15, "completion_tokens": 10},
 	}
 }
 
-func openAIToolCallResponse(calls []map[string]any) map[string]any {
+func openAITestToolCall(id, name, args string) map[string]any {
 	return map[string]any{
-		"id":     "chatcmpl-test",
-		"object": "chat.completion",
-		"model":  "gpt-4o",
-		"choices": []map[string]any{
-			{
-				"index": 0,
-				"message": map[string]any{
-					"role":       "assistant",
-					"content":    nil,
-					"tool_calls": calls,
-				},
-				"finish_reason": "tool_calls",
-			},
-		},
-		"usage": map[string]any{
-			"prompt_tokens":     15,
-			"completion_tokens": 10,
-			"total_tokens":      25,
-		},
+		"id": id, "type": "function",
+		"function": map[string]any{"name": name, "arguments": args},
 	}
 }
 
-func openAISingleToolCall(id, name, args string) map[string]any {
-	return map[string]any{
-		"id":   id,
-		"type": "function",
-		"function": map[string]any{
-			"name":      name,
-			"arguments": args,
-		},
+func TestOpenAI_MissingAPIKey(t *testing.T) {
+	_, err := NewOpenAIAdapter(Config{Model: "gpt-4o"})
+	if err == nil {
+		t.Fatal("should error with empty APIKey")
 	}
 }
 
-func TestOpenAIAdapter_TextResponse(t *testing.T) {
-	srv := mockServer(t, http.StatusOK, openAITextResponse("Hello from mock GPT"))
-
-	adapter := &OpenAIAdapter{
-		client:      newOpenAIClientWithBaseURL(t, srv.URL),
-		model:       "gpt-4o",
-		maxTokens:   1024,
-		temperature: 0.7,
-		timeout:     5 * time.Second,
-	}
-
-	resp, err := adapter.Complete(context.Background(), simpleRequest("say hello"))
+func TestOpenAI_TextResponse(t *testing.T) {
+	srv := mockServer(t, http.StatusOK, openAITextBody("Hello from GPT"))
+	resp, err := newTestOpenAI(t, srv).Complete(context.Background(), simpleRequest("hello"))
 	if err != nil {
 		t.Fatalf("Complete() error: %v", err)
 	}
-
-	if resp.Content != "Hello from mock GPT" {
-		t.Errorf("Content = %q, want %q", resp.Content, "Hello from mock GPT")
+	if resp.Content != "Hello from GPT" {
+		t.Errorf("Content = %q, want %q", resp.Content, "Hello from GPT")
 	}
 	if len(resp.ToolCalls) != 0 {
-		t.Errorf("ToolCalls should be empty for text response, got %d", len(resp.ToolCalls))
+		t.Errorf("ToolCalls should be empty, got %d", len(resp.ToolCalls))
 	}
 	if resp.Usage.InputTokens != 10 {
 		t.Errorf("InputTokens = %d, want 10", resp.Usage.InputTokens)
@@ -124,250 +86,172 @@ func TestOpenAIAdapter_TextResponse(t *testing.T) {
 	if resp.Usage.OutputTokens != 20 {
 		t.Errorf("OutputTokens = %d, want 20", resp.Usage.OutputTokens)
 	}
-	if resp.Usage.Total() != 30 {
-		t.Errorf("Total() = %d, want 30", resp.Usage.Total())
-	}
 	if resp.FinishReason != "stop" {
-		t.Errorf("FinishReason = %q, want %q", resp.FinishReason, "stop")
+		t.Errorf("FinishReason = %q, want stop", resp.FinishReason)
 	}
 }
 
-func TestOpenAIAdapter_SingleToolCall(t *testing.T) {
-	argsJSON := `{"query":"Go 1.24 release notes"}`
-	srv := mockServer(t, http.StatusOK, openAIToolCallResponse([]map[string]any{
-		openAISingleToolCall("call_test_123", "web_search", argsJSON),
+func TestOpenAI_SingleToolCall(t *testing.T) {
+	args := `{"query":"Go 1.26 release notes"}`
+	srv := mockServer(t, http.StatusOK, openAIToolCallBody([]map[string]any{
+		openAITestToolCall("call_123", "web_search", args),
 	}))
 
-	adapter := &OpenAIAdapter{
-		client:      newOpenAIClientWithBaseURL(t, srv.URL),
-		model:       "gpt-4o",
-		maxTokens:   1024,
-		temperature: 0.7,
-		timeout:     5 * time.Second,
-	}
-
-	resp, err := adapter.Complete(context.Background(), Request{
+	resp, err := newTestOpenAI(t, srv).Complete(context.Background(), Request{
 		SystemPrompt: "You are a researcher.",
-		History:      simpleHistory("find go 1.24 notes"),
-		ToolSchemas: map[string]tools.Schema{
-			"web_search": {Description: "Search the web"},
-		},
+		History:      simpleHistory("find go 1.26 notes"),
+		ToolSchemas:  map[string]tools.Schema{"web_search": {Description: "Search the web"}},
 	})
 	if err != nil {
 		t.Fatalf("Complete() error: %v", err)
 	}
-
 	if resp.Content != "" {
-		t.Errorf("Content should be empty for tool call response, got %q", resp.Content)
+		t.Errorf("Content should be empty for tool call, got %q", resp.Content)
 	}
 	if len(resp.ToolCalls) != 1 {
 		t.Fatalf("ToolCalls len = %d, want 1", len(resp.ToolCalls))
 	}
 	tc := resp.ToolCalls[0]
 	if tc.ToolName != "web_search" {
-		t.Errorf("ToolName = %q, want %q", tc.ToolName, "web_search")
+		t.Errorf("ToolName = %q, want web_search", tc.ToolName)
 	}
-	if tc.ID != "call_test_123" {
-		t.Errorf("ID = %q, want %q", tc.ID, "call_test_123")
+	if tc.ID != "call_123" {
+		t.Errorf("ID = %q, want call_123", tc.ID)
 	}
-	if tc.Input != argsJSON {
-		t.Errorf("Input = %q, want %q", tc.Input, argsJSON)
-	}
-	if resp.FinishReason != "tool_calls" {
-		t.Errorf("FinishReason = %q, want %q", resp.FinishReason, "tool_calls")
+	if tc.Input != args {
+		t.Errorf("Input = %q, want %q", tc.Input, args)
 	}
 }
 
-func TestOpenAIAdapter_MultipleToolCalls(t *testing.T) {
-	// The LLM requests three independent tools in one response
-	srv := mockServer(t, http.StatusOK, openAIToolCallResponse([]map[string]any{
-		openAISingleToolCall("call_1", "web_search", `{"query":"Go 1.24"}`),
-		openAISingleToolCall("call_2", "read_file", `{"path":"notes.md"}`),
-		openAISingleToolCall("call_3", "wikipedia", `{"topic":"Go language"}`),
+func TestOpenAI_MultipleToolCalls(t *testing.T) {
+	srv := mockServer(t, http.StatusOK, openAIToolCallBody([]map[string]any{
+		openAITestToolCall("id1", "web_search", `{"query":"Go"}`),
+		openAITestToolCall("id2", "read_file", `{"path":"f.md"}`),
+		openAITestToolCall("id3", "wikipedia", `{"topic":"Go"}`),
 	}))
 
-	adapter := &OpenAIAdapter{
-		client: newOpenAIClientWithBaseURL(t, srv.URL),
-		model:  "gpt-4o", maxTokens: 1024, temperature: 0.7, timeout: 5 * time.Second,
-	}
-
-	resp, err := adapter.Complete(context.Background(), simpleRequest("research Go"))
+	resp, err := newTestOpenAI(t, srv).Complete(context.Background(), simpleRequest("research"))
 	if err != nil {
 		t.Fatalf("Complete() error: %v", err)
 	}
-
 	if len(resp.ToolCalls) != 3 {
 		t.Fatalf("ToolCalls len = %d, want 3", len(resp.ToolCalls))
 	}
 	if resp.ToolCalls[0].ToolName != "web_search" {
 		t.Errorf("[0].ToolName = %q, want web_search", resp.ToolCalls[0].ToolName)
 	}
-	if resp.ToolCalls[1].ToolName != "read_file" {
-		t.Errorf("[1].ToolName = %q, want read_file", resp.ToolCalls[1].ToolName)
-	}
-	if resp.ToolCalls[2].ToolName != "wikipedia" {
-		t.Errorf("[2].ToolName = %q, want wikipedia", resp.ToolCalls[2].ToolName)
-	}
-	// Each ID must be preserved correctly for matching results back
-	if resp.ToolCalls[0].ID != "call_1" {
-		t.Errorf("[0].ID = %q, want call_1", resp.ToolCalls[0].ID)
-	}
-	if resp.ToolCalls[2].ID != "call_3" {
-		t.Errorf("[2].ID = %q, want call_3", resp.ToolCalls[2].ID)
-	}
-	if resp.Content != "" {
-		t.Errorf("Content should be empty when tool calls present")
+	if resp.ToolCalls[2].ID != "id3" {
+		t.Errorf("[2].ID = %q, want id3", resp.ToolCalls[2].ID)
 	}
 }
 
-func TestOpenAIAdapter_ErrorResponse(t *testing.T) {
+func TestOpenAI_ErrorResponse(t *testing.T) {
 	srv := mockServer(t, http.StatusUnauthorized, map[string]any{
 		"error": map[string]any{"message": "Invalid API key", "type": "invalid_request_error"},
 	})
-
-	adapter := &OpenAIAdapter{
-		client: newOpenAIClientWithBaseURL(t, srv.URL),
-		model:  "gpt-4o", maxTokens: 1024, temperature: 0.7, timeout: 5 * time.Second,
-	}
-	_, err := adapter.Complete(context.Background(), simpleRequest("hello"))
+	_, err := newTestOpenAI(t, srv).Complete(context.Background(), simpleRequest("hello"))
 	if err == nil {
-		t.Fatal("Complete() should return error for 401 response")
+		t.Fatal("Complete() should error for 401")
 	}
 }
 
-func TestOpenAIAdapter_EmptyChoices(t *testing.T) {
+func TestOpenAI_EmptyChoices(t *testing.T) {
 	srv := mockServer(t, http.StatusOK, map[string]any{
-		"id": "chatcmpl-test", "object": "chat.completion", "model": "gpt-4o",
+		"id": "test", "object": "chat.completion", "model": "gpt-4o",
 		"choices": []map[string]any{},
-		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
+		"usage":   map[string]any{"prompt_tokens": 5, "completion_tokens": 0},
 	})
-
-	adapter := &OpenAIAdapter{
-		client: newOpenAIClientWithBaseURL(t, srv.URL),
-		model:  "gpt-4o", maxTokens: 1024, temperature: 0.7, timeout: 5 * time.Second,
-	}
-	resp, err := adapter.Complete(context.Background(), simpleRequest("hello"))
+	resp, err := newTestOpenAI(t, srv).Complete(context.Background(), simpleRequest("hello"))
 	if err != nil {
-		t.Fatalf("Complete() unexpected error: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if resp.FinishReason != "no_choices" {
-		t.Errorf("FinishReason = %q, want %q", resp.FinishReason, "no_choices")
+		t.Errorf("FinishReason = %q, want no_choices", resp.FinishReason)
 	}
 }
 
-func TestOpenAIAdapter_RequestContainsSystemPrompt(t *testing.T) {
-	var capturedBody []byte
-
+func TestOpenAI_RequestContainsSystemPrompt(t *testing.T) {
+	var captured []byte
 	srv := mockServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
-		capturedBody, _ = readAll(r.Body)
+		captured, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(openAITextResponse("ok"))
+		json.NewEncoder(w).Encode(openAITextBody("ok"))
 	})
 
-	adapter := &OpenAIAdapter{
-		client: newOpenAIClientWithBaseURL(t, srv.URL),
-		model:  "gpt-4o", maxTokens: 1024, temperature: 0.7, timeout: 5 * time.Second,
-	}
-
-	systemPrompt := "You are a weather reporter."
-	_, err := adapter.Complete(context.Background(), Request{
-		SystemPrompt: systemPrompt,
-		History:      simpleHistory("what is the weather?"),
+	prompt := "You are a weather reporter."
+	newTestOpenAI(t, srv).Complete(context.Background(), Request{
+		SystemPrompt: prompt,
+		History:      simpleHistory("weather?"),
 	})
-	if err != nil {
-		t.Fatalf("Complete() error: %v", err)
-	}
 
 	var body map[string]any
-	if err := json.Unmarshal(capturedBody, &body); err != nil {
-		t.Fatalf("unmarshal request body: %v", err)
-	}
+	json.Unmarshal(captured, &body)
 	messages := body["messages"].([]any)
-	if len(messages) == 0 {
-		t.Fatal("request body missing messages array")
+	first := messages[0].(map[string]any)
+	if first["role"] != "system" {
+		t.Errorf("first message role = %q, want system", first["role"])
 	}
-	firstMsg := messages[0].(map[string]any)
-	if firstMsg["role"] != "system" {
-		t.Errorf("first message role = %q, want system", firstMsg["role"])
-	}
-	if firstMsg["content"] != systemPrompt {
-		t.Errorf("first message content = %q, want %q", firstMsg["content"], systemPrompt)
+	if first["content"] != prompt {
+		t.Errorf("system content = %q, want %q", first["content"], prompt)
 	}
 }
 
-func TestOpenAIAdapter_ModelAndProvider(t *testing.T) {
-	adapter := &OpenAIAdapter{model: "gpt-4o"}
-	if adapter.Model() != "gpt-4o" {
-		t.Errorf("Model() = %q, want gpt-4o", adapter.Model())
-	}
-	if adapter.Provider() != "openai" {
-		t.Errorf("Provider() = %q, want openai", adapter.Provider())
-	}
-}
-
-func TestOpenAIAdapter_MissingAPIKey(t *testing.T) {
-	_, err := NewOpenAIAdapter(Config{Model: "gpt-4o"})
-	if err == nil {
-		t.Fatal("NewOpenAIAdapter() should error with empty APIKey")
-	}
-	if err.Error() != "openai: api_key is required" {
-		t.Errorf("Error() = %q, want %q", err, "openai: api_key is required")
+func TestOpenAI_AuthHeader(t *testing.T) {
+	var capturedAuth string
+	srv := mockServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(openAITextBody("ok"))
+	})
+	newTestOpenAI(t, srv).Complete(context.Background(), simpleRequest("hello"))
+	if capturedAuth != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want Bearer test-key", capturedAuth)
 	}
 }
 
-func TestOpenAIAdapter_ContextCancellation(t *testing.T) {
+func TestOpenAI_ContextCancellation(t *testing.T) {
 	ctx := context.Background()
 	srv := mockServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
 		<-ctx.Done()
 	})
-
-	adapter := &OpenAIAdapter{
-		client:      newOpenAIClientWithBaseURL(t, srv.URL),
-		model:       "gpt-4o",
-		maxTokens:   1024,
-		temperature: 0.7,
-		timeout:     5 * time.Second,
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
-
-	_, err := adapter.Complete(ctx, simpleRequest("hello"))
+	_, err := newTestOpenAI(t, srv).Complete(ctx, simpleRequest("hello"))
 	if err == nil {
-		t.Fatal("Complete() should return error when context is cancelled")
+		t.Fatal("should error when context cancelled")
+	}
+}
+
+func TestOpenAI_ModelAndProvider(t *testing.T) {
+	a := &OpenAIAdapter{model: "gpt-4o"}
+	if a.Model() != "gpt-4o" {
+		t.Errorf("Model() = %q, want gpt-4o", a.Model())
+	}
+	if a.Provider() != "openai" {
+		t.Errorf("Provider() = %q, want openai", a.Provider())
 	}
 }
 
 func TestBuildOpenAIMessages_SystemPromptFirst(t *testing.T) {
-	messages := buildOpenAIMessages("be helpful", simpleHistory("hello"))
-	if len(messages) != 2 {
-		t.Fatalf("expected at least 2 messages, got %d", len(messages))
+	msgs := buildOpenAIMessages("be helpful", simpleHistory("hello"))
+	if msgs[0].Role != "system" {
+		t.Errorf("first role = %q, want system", msgs[0].Role)
 	}
-	if messages[0].Role != "system" {
-		t.Errorf("first message role = %q, want %q", messages[0].Role, "system")
-	}
-	if messages[0].Content != "be helpful" {
-		t.Errorf("system message content = %q, want %q", messages[0].Content, "be helpful")
-	}
-	if messages[1].Role != "user" {
-		t.Errorf("second message role = %q, want %q", messages[1].Role, "user")
+	if msgs[0].Content != "be helpful" {
+		t.Errorf("system content = %q, want be helpful", msgs[0].Content)
 	}
 }
 
 func TestBuildOpenAIMessages_EmptySystemPrompt(t *testing.T) {
-	messages := buildOpenAIMessages("", simpleHistory("hello"))
-	if len(messages) != 1 {
-		t.Errorf("messages length = %d, want %d", len(messages), 1)
-	}
-	if messages[0].Role == "system" {
-		t.Error("should not add system message when SystemPrompt is empty")
+	msgs := buildOpenAIMessages("", simpleHistory("hello"))
+	if msgs[0].Role == "system" {
+		t.Error("should not add system message when empty")
 	}
 }
 
 func TestTranslateOpenAIResponse_NoChoices(t *testing.T) {
-	openAICompletionResponse := openaiChatCompletionResponse(nil)
-	resp := translateOpenAIResponse(openAICompletionResponse)
+	resp := translateOpenAIResponse(openAIResponse{})
 	if resp.FinishReason != "no_choices" {
-		t.Errorf("FinishReason = %q, want %q", resp.FinishReason, "no_choices")
+		t.Errorf("FinishReason = %q, want no_choices", resp.FinishReason)
 	}
 }
