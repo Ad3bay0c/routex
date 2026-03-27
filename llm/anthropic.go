@@ -1,52 +1,113 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
-
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"github.com/Ad3bay0c/routex/memory"
 	"github.com/Ad3bay0c/routex/tools"
 )
 
-// AnthropicAdapter implements the Adapter interface using the Anthropic API.
-// It translates Routex's internal Request/Response types into the shapes
-// the Anthropic SDK expects, and back again.
-//
-// Agents never import this file — they hold the Adapter interface.
-// Only llm.New() and the compile-time check at the bottom know this type exists.
+const (
+	anthropicDefaultBaseURL = "https://api.anthropic.com/v1/messages"
+	anthropicVersion        = "2023-06-01"
+)
+
+// https://docs.anthropic.com/en/api/messages
+
+type anthropicRequest struct {
+	Model       string             `json:"model"`
+	MaxTokens   int                `json:"max_tokens"`
+	System      string             `json:"system,omitempty"`
+	Messages    []anthropicMessage `json:"messages"`
+	Tools       []anthropicTool    `json:"tools,omitempty"`
+	Temperature float64            `json:"temperature,omitempty"`
+}
+
+type anthropicMessage struct {
+	Role    string             `json:"role"`
+	Content []anthropicContent `json:"content"`
+}
+
+type anthropicContent struct {
+	// For text blocks (role=assistant, type=text)
+	// For tool_use blocks (role=assistant, type=tool_use)
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+
+	// For tool_result blocks (role=user, type=tool_result)
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Content   string `json:"content,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"`
+}
+
+type anthropicTool struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	InputSchema anthropicToolSchema `json:"input_schema"`
+}
+
+type anthropicToolSchema struct {
+	Type       string         `json:"type"`
+	Properties map[string]any `json:"properties,omitempty"`
+	Required   []string       `json:"required,omitempty"`
+}
+
+type anthropicResponse struct {
+	ID         string             `json:"id"`
+	Type       string             `json:"type"`
+	Role       string             `json:"role"`
+	Content    []anthropicContent `json:"content"`
+	Model      string             `json:"model"`
+	StopReason string             `json:"stop_reason"`
+	Usage      struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
+	Error *anthropicError `json:"error,omitempty"`
+}
+
+type anthropicError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+func (e *anthropicError) Error() string {
+	return fmt.Sprintf("anthropic %s: %s", e.Type, e.Message)
+}
+
+// AnthropicAdapter calls the Anthropic Messages API directly over HTTP.
+// No SDK — just net/http and encoding/json. Zero third-party dependencies.
 type AnthropicAdapter struct {
-	client      *anthropic.Client
+	apiKey      string
+	baseURL     string
 	model       string
 	maxTokens   int
 	temperature float64
 	timeout     time.Duration
+	http        *http.Client
 }
 
 // NewAnthropicAdapter creates an Anthropic adapter from a Config.
-// Called by llm.New() when provider is "anthropic".
 func NewAnthropicAdapter(cfg Config) (*AnthropicAdapter, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("anthropic: api_key is required")
 	}
 
-	// Build the client with the API key.
-	// option.WithAPIKey injects it into every request header automatically.
-	// If a custom BaseURL is set (e.g. a proxy), we honour that too.
-	clientOpts := []option.RequestOption{
-		option.WithAPIKey(cfg.APIKey),
-	}
-	if cfg.BaseURL != "" {
-		clientOpts = append(clientOpts, option.WithBaseURL(cfg.BaseURL))
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = anthropicDefaultBaseURL
 	}
 
-	client := anthropic.NewClient(clientOpts...)
-
-	// Apply sensible defaults for optional fields
 	maxTokens := cfg.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 4096
@@ -63,178 +124,169 @@ func NewAnthropicAdapter(cfg Config) (*AnthropicAdapter, error) {
 	}
 
 	return &AnthropicAdapter{
-		client:      &client,
+		apiKey:      cfg.APIKey,
+		baseURL:     baseURL,
 		model:       cfg.Model,
 		maxTokens:   maxTokens,
 		temperature: temperature,
 		timeout:     timeout,
+		http:        &http.Client{Timeout: timeout},
 	}, nil
 }
 
+func (a *AnthropicAdapter) Model() string    { return a.model }
+func (a *AnthropicAdapter) Provider() string { return "anthropic" }
+
 // Complete sends a conversation to Anthropic and returns the response.
-// This is the core method — called by the agent on every thinking turn.
-//
-// The agent's loop looks like this:
-//  1. Call Complete() with history + tool schemas
-//  2. If response has ToolCall → execute tool → append result → go to 1
-//  3. If response has Content  → agent is done, return content
-//
-// This satisfies the Adapter interface.
 func (a *AnthropicAdapter) Complete(ctx context.Context, req Request) (Response, error) {
-	// Apply per-call timeout
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	// Translate our history into Anthropic's message format
-	messages, err := buildAnthropicMessages(req.History)
-	if err != nil {
-		return Response{}, fmt.Errorf("anthropic: build messages: %w", err)
-	}
-
-	// Translate our tool schemas into Anthropic's tool format
-	anthropicTools := buildAnthropicTools(req.ToolSchemas)
-
-	// Choose effective token and temperature values
-	// Per-request values override the adapter defaults
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = a.maxTokens
 	}
-
 	temperature := req.Temperature
 	if temperature == 0 {
 		temperature = a.temperature
 	}
 
-	// Build the API request
-	params := anthropic.MessageNewParams{
-		Model:     a.model,
-		MaxTokens: int64(maxTokens),
-		System: []anthropic.TextBlockParam{
-			{Text: req.SystemPrompt},
-		},
-		Messages: messages,
+	apiReq := anthropicRequest{
+		Model:       a.model,
+		MaxTokens:   maxTokens,
+		Temperature: temperature,
+		System:      req.SystemPrompt,
+		Messages:    buildAnthropicMessages(req.History),
+		Tools:       buildAnthropicTools(req.ToolSchemas),
 	}
 
-	// Only attach tools if there are any — sending an empty tools array
-	// to Anthropic causes an API error
-	if len(anthropicTools) > 0 {
-		params.Tools = anthropicTools
-	}
-
-	// Make the API call
-	msg, err := a.client.Messages.New(ctx, params)
+	body, err := json.Marshal(apiReq)
 	if err != nil {
-		return Response{}, fmt.Errorf("anthropic: api call failed: %w", err)
+		return Response{}, fmt.Errorf("anthropic: marshal request: %w", err)
 	}
 
-	// Translate Anthropic's response back into our Response type
-	return translateAnthropicResponse(msg), nil
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL, bytes.NewReader(body))
+	if err != nil {
+		return Response{}, fmt.Errorf("anthropic: build request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", a.apiKey)
+	httpReq.Header.Set("anthropic-version", anthropicVersion)
+
+	httpResp, err := a.http.Do(httpReq)
+	if err != nil {
+		return Response{}, fmt.Errorf("anthropic: http: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return Response{}, fmt.Errorf("anthropic: read response: %w", err)
+	}
+
+	var apiResp anthropicResponse
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return Response{}, fmt.Errorf("anthropic: decode response: %w", err)
+	}
+
+	// API-level error (e.g. auth failure, invalid model) comes back as
+	// a 4xx/5xx with an error object in the body
+	if apiResp.Error != nil {
+		return Response{}, apiResp.Error
+	}
+	if httpResp.StatusCode != http.StatusOK {
+		return Response{}, fmt.Errorf("anthropic: HTTP %d: %s", httpResp.StatusCode, string(respBody))
+	}
+
+	return translateAnthropicResponse(apiResp), nil
 }
 
-// Model returns the model string this adapter is using.
-// This satisfies the Adapter interface.
-func (a *AnthropicAdapter) Model() string {
-	return a.model
-}
-
-// Provider returns "anthropic".
-// This satisfies the Adapter interface.
-func (a *AnthropicAdapter) Provider() string {
-	return "anthropic"
-}
-
-// buildAnthropicMessages converts our []memory.Message into the
-// []anthropic.MessageParam format the SDK expects.
+// buildAnthropicMessages converts []memory.Message into the Anthropic
+// messages array format.
 //
-// Multi-tool batches: when an assistant message has ToolCalls,
-// we emit one assistant message containing all tool_use blocks, followed
-// by one user message per tool result. This is what Anthropic requires —
-// all results for a batch must be present before the next LLM call.
-func buildAnthropicMessages(history []memory.Message) ([]anthropic.MessageParam, error) {
-	params := make([]anthropic.MessageParam, 0, len(history))
+// Multi-tool batches: when an assistant message has ToolCalls (plural),
+// we emit one assistant message with all tool_use content blocks, followed
+// by one user message per tool result — Anthropic requires all results
+// before the next LLM call.
+func buildAnthropicMessages(history []memory.Message) []anthropicMessage {
+	msgs := make([]anthropicMessage, 0, len(history))
 
 	for _, msg := range history {
 		switch msg.Role {
 
 		case "user":
 			if msg.ToolCall == nil {
-				params = append(params, anthropic.NewUserMessage(
-					anthropic.NewTextBlock(msg.Content),
-				))
+				msgs = append(msgs, anthropicMessage{
+					Role: "user",
+					Content: []anthropicContent{
+						{Type: "text", Text: msg.Content},
+					},
+				})
 				continue
 			}
 			// Single tool result
-			params = append(params, anthropic.NewUserMessage(
-				anthropic.NewToolResultBlock(
-					msg.ToolCall.ToolName,
-					msg.ToolCall.Output,
-					msg.ToolCall.Error != "",
-				),
-			))
+			msgs = append(msgs, anthropicMessage{
+				Role: "user",
+				Content: []anthropicContent{{
+					Type:      "tool_result",
+					ToolUseID: msg.ToolCall.ID,
+					Content:   msg.ToolCall.Output,
+					IsError:   msg.ToolCall.Error != "",
+				}},
+			})
 
 		case "assistant":
-			// Multi-tool batch: one assistant message with all tool_use blocks
+			// Multi-tool batch — one assistant message with all tool_use blocks
 			if len(msg.ToolCalls) > 0 {
-				blocks := make([]anthropic.ContentBlockParamUnion, 0, len(msg.ToolCalls))
+				blocks := make([]anthropicContent, 0, len(msg.ToolCalls))
 				for _, tc := range msg.ToolCalls {
-					var inputRaw map[string]any
-					if err := json.Unmarshal([]byte(tc.Input), &inputRaw); err != nil {
-						inputRaw = map[string]any{}
-					}
-					blocks = append(blocks, anthropic.NewToolUseBlock(
-						tc.ToolName,
-						inputRaw,
-						tc.ToolName,
-					))
+					blocks = append(blocks, anthropicContent{
+						Type:  "tool_use",
+						ID:    tc.ID,
+						Name:  tc.ToolName,
+						Input: json.RawMessage(tc.Input),
+					})
 				}
-				params = append(params, anthropic.NewAssistantMessage(blocks...))
+				msgs = append(msgs, anthropicMessage{Role: "assistant", Content: blocks})
 				continue
 			}
 
-			if msg.ToolCall == nil {
-				params = append(params, anthropic.NewAssistantMessage(
-					anthropic.NewTextBlock(msg.Content),
-				))
+			if msg.ToolCall != nil {
+				// Single tool use request
+				msgs = append(msgs, anthropicMessage{
+					Role: "assistant",
+					Content: []anthropicContent{{
+						Type:  "tool_use",
+						ID:    msg.ToolCall.ID,
+						Name:  msg.ToolCall.ToolName,
+						Input: json.RawMessage(msg.ToolCall.Input),
+					}},
+				})
 				continue
 			}
 
-			// Single tool use request
-			var inputRaw map[string]any
-			if err := json.Unmarshal([]byte(msg.ToolCall.Input), &inputRaw); err != nil {
-				inputRaw = map[string]any{}
-			}
-			params = append(params, anthropic.NewAssistantMessage(
-				anthropic.NewToolUseBlock(
-					msg.ToolCall.ToolName, // tool_use_id
-					inputRaw,
-					msg.ToolCall.ToolName, // tool name
-				),
-			))
-
-		default:
-			continue
+			msgs = append(msgs, anthropicMessage{
+				Role: "assistant",
+				Content: []anthropicContent{
+					{Type: "text", Text: msg.Content},
+				},
+			})
 		}
 	}
 
-	return params, nil
+	return msgs
 }
 
-// buildAnthropicTools converts our map of tool schemas into the
-// []anthropic.ToolParam format the SDK expects.
-// The LLM reads these to know what tools are available and how to call them.
-func buildAnthropicTools(schemas map[string]tools.Schema) []anthropic.ToolUnionParam {
+// buildAnthropicTools converts our tool schema map into Anthropic's tools array format.
+func buildAnthropicTools(schemas map[string]tools.Schema) []anthropicTool {
 	if len(schemas) == 0 {
 		return nil
 	}
 
-	anthropicTools := make([]anthropic.ToolUnionParam, 0, len(schemas))
-
+	result := make([]anthropicTool, 0, len(schemas))
 	for name, schema := range schemas {
-		// Build the input_schema — describes the JSON object the LLM
-		// must produce when calling this tool
 		properties := make(map[string]any, len(schema.Parameters))
-		required := make([]string, 0)
+		var required []string
 
 		for paramName, param := range schema.Parameters {
 			properties[paramName] = map[string]any{
@@ -246,38 +298,28 @@ func buildAnthropicTools(schemas map[string]tools.Schema) []anthropic.ToolUnionP
 			}
 		}
 
-		inputSchema := anthropic.ToolInputSchemaParam{
-			Properties: properties,
-		}
-		if len(required) > 0 {
-			inputSchema.Required = required
-		}
-
-		anthropicTools = append(anthropicTools, anthropic.ToolUnionParam{
-			OfTool: &anthropic.ToolParam{
-				Name:        name,
-				Description: anthropic.String(schema.Description),
-				InputSchema: inputSchema,
+		result = append(result, anthropicTool{
+			Name:        name,
+			Description: schema.Description,
+			InputSchema: anthropicToolSchema{
+				Type:       "object",
+				Properties: properties,
+				Required:   required,
 			},
 		})
 	}
-
-	return anthropicTools
+	return result
 }
 
-// translateAnthropicResponse converts an Anthropic API response
-// into our clean Response type.
-//
-// Anthropic responses can contain multiple content blocks — a mix of
-// text blocks and tool_use blocks. When multiple tool_use blocks are
-// present the agent will execute them all concurrently before the
-// next LLM call.
-func translateAnthropicResponse(msg *anthropic.Message) Response {
+// translateAnthropicResponse converts the Anthropic API response into
+// our clean Response type. Collects all tool_use blocks so the agent
+// can execute them concurrently.
+func translateAnthropicResponse(msg anthropicResponse) Response {
 	resp := Response{
-		FinishReason: string(msg.StopReason),
+		FinishReason: msg.StopReason,
 		Usage: TokenUsage{
-			InputTokens:  int(msg.Usage.InputTokens),
-			OutputTokens: int(msg.Usage.OutputTokens),
+			InputTokens:  msg.Usage.InputTokens,
+			OutputTokens: msg.Usage.OutputTokens,
 		},
 	}
 
@@ -287,14 +329,15 @@ func translateAnthropicResponse(msg *anthropic.Message) Response {
 			resp.Content = block.Text
 
 		case "tool_use":
-			inputJSON, err := json.Marshal(block.Input)
-			if err != nil {
-				inputJSON = []byte("{}")
+			// Input comes back as a raw JSON object — convert to string
+			input := string(block.Input)
+			if input == "" {
+				input = "{}"
 			}
 			resp.ToolCalls = append(resp.ToolCalls, ToolCallRequest{
 				ID:       block.ID,
 				ToolName: block.Name,
-				Input:    string(inputJSON),
+				Input:    input,
 			})
 		}
 	}
