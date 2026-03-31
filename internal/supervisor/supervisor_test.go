@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -32,15 +33,22 @@ func (a *noopAdapter) Provider() string { return "mock" }
 
 func newTestAgent(t *testing.T, id string) *agents.Agent {
 	t.Helper()
+	return newTestAgentWithDeps(t, id, nil)
+}
+
+func newTestAgentWithDeps(t *testing.T, id string, dependsOn []string) *agents.Agent {
+	t.Helper()
 	mem := memory.NewInMemStore()
 	t.Cleanup(func() { mem.Close() })
 
 	logger := slog.New(slog.NewTextHandler(testLogWriter{t}, nil))
 	cfg := agents.Config{
-		ID:      id,
-		Role:    agents.Researcher,
-		Goal:    "test",
-		Timeout: 5 * time.Second,
+		ID:        id,
+		Role:      agents.Researcher,
+		Goal:      "test",
+		DependsOn: dependsOn,
+		Timeout:   5 * time.Second,
+		Restart:   agents.OneForOne,
 	}
 	return agents.New(cfg, &noopAdapter{}, mem, tools.NewRegistry(), logger, nil, nil)
 }
@@ -180,6 +188,114 @@ func TestSupervisor_MultipleAgentsIndependent(t *testing.T) {
 		// good
 	default:
 		t.Error("ag2 inbox full — was it incorrectly restarted?")
+	}
+}
+
+func TestSupervisor_New_DefaultLimits(t *testing.T) {
+	sup := New(nil, agents.OneForOne, 0, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if sup.maxRestarts != 3 {
+		t.Errorf("maxRestarts = %d, want 3", sup.maxRestarts)
+	}
+	if sup.restartWindow != time.Minute {
+		t.Errorf("restartWindow = %v, want 1m", sup.restartWindow)
+	}
+}
+
+func TestSupervisor_FindDependents_Transitive(t *testing.T) {
+	// a ← b ← c ; d also depends on a
+	a := newTestAgentWithDeps(t, "a", nil)
+	b := newTestAgentWithDeps(t, "b", []string{"a"})
+	c := newTestAgentWithDeps(t, "c", []string{"b"})
+	d := newTestAgentWithDeps(t, "d", []string{"a"})
+	list := []*agents.Agent{a, b, c, d}
+	sup := &Supervisor{agents: list}
+
+	deps := sup.findDependents("a")
+	if len(deps) != 3 {
+		t.Fatalf("findDependents(a) = %v (len %d), want 3 ids", deps, len(deps))
+	}
+	seen := map[string]bool{}
+	for _, id := range deps {
+		seen[id] = true
+	}
+	for _, want := range []string{"b", "c", "d"} {
+		if !seen[want] {
+			t.Errorf("missing dependent %q in %v", want, deps)
+		}
+	}
+}
+
+func TestSupervisor_OneForAll_RestartsAll(t *testing.T) {
+	ag1 := newTestAgent(t, "agent-1")
+	ag2 := newTestAgent(t, "agent-2")
+	logger := slog.New(slog.NewTextHandler(testLogWriter{t}, nil))
+	sup := New([]*agents.Agent{ag1, ag2}, agents.OneForAll, 3, time.Minute, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	sup.Start(ctx)
+	t.Cleanup(func() {
+		cancel()
+		sup.Stop()
+	})
+	time.Sleep(30 * time.Millisecond)
+
+	report, replyCh := failureReport("agent-1", fmt.Errorf("boom"))
+	sup.FailureReports <- report
+	decision := <-replyCh
+	if !decision.Retry {
+		t.Fatal("expected Retry for OneForAll")
+	}
+
+	time.Sleep(30 * time.Millisecond)
+	for _, ag := range []*agents.Agent{ag1, ag2} {
+		select {
+		case ag.Inbox <- agents.Message{RunID: "r", Input: "ping"}:
+		default:
+			t.Errorf("agent %s inbox blocked after OneForAll restart", ag.ID())
+		}
+	}
+}
+
+func TestSupervisor_RestForOne_RestartsSubtree(t *testing.T) {
+	// root → mid → leaf; failing mid should restart mid + leaf
+	root := newTestAgentWithDeps(t, "root", nil)
+	mid := newTestAgentWithDeps(t, "mid", []string{"root"})
+	leaf := newTestAgentWithDeps(t, "leaf", []string{"mid"})
+	logger := slog.New(slog.NewTextHandler(testLogWriter{t}, nil))
+	sup := New([]*agents.Agent{root, mid, leaf}, agents.RestForOne, 3, time.Minute, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	sup.Start(ctx)
+	t.Cleanup(func() {
+		cancel()
+		sup.Stop()
+	})
+	time.Sleep(30 * time.Millisecond)
+
+	report, replyCh := failureReport("mid", fmt.Errorf("mid failed"))
+	sup.FailureReports <- report
+	decision := <-replyCh
+	if !decision.Retry {
+		t.Fatal("expected Retry for RestForOne")
+	}
+	time.Sleep(30 * time.Millisecond)
+	for _, id := range []string{"mid", "leaf"} {
+		var ag *agents.Agent
+		switch id {
+		case "mid":
+			ag = mid
+		case "leaf":
+			ag = leaf
+		}
+		select {
+		case ag.Inbox <- agents.Message{RunID: "r", Input: "ping"}:
+		default:
+			t.Errorf("agent %s inbox blocked after RestForOne restart", id)
+		}
+	}
+	// root should still accept inbox (not restarted)
+	select {
+	case root.Inbox <- agents.Message{RunID: "r", Input: "ping"}:
+	default:
+		t.Error("root inbox blocked — should not be restarted for mid failure")
 	}
 }
 
