@@ -33,8 +33,15 @@ jobs:
       - name: Run vet
         run: go vet ./...
 
-      - name: Run tests with race detector
-        run: go test -race -timeout 120s ./...
+      - name: Run tests with race detector and coverage
+        run: go test -race -timeout 120s -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.out
+          fail_ci_if_error: false
 
   lint:
     name: Lint
