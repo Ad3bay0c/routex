@@ -1,0 +1,5 @@
+# https://docs.codecov.com/docs/codecovyml-reference
+#
+# Example programs skew overall coverage; library packages are what we track.
+ignore:
+  - "examples/**/*"
