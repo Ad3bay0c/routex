@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -310,7 +311,7 @@ func (t *GenerateImageTool) saveImage(b64Data, saveAs string) (string, error) {
 func init() {
 	tools.RegisterBuiltin("generate_image", func(cfg tools.ToolConfig) (tools.Tool, error) {
 		if cfg.APIKey == "" {
-			return nil, fmt.Errorf(
+			return nil, errors.New(
 				"generate_image requires an api_key\n" +
 					"  add to agents.yaml:  api_key: \"env:OPENAI_API_KEY\"\n" +
 					"  then set the env:    export OPENAI_API_KEY=sk-...",
