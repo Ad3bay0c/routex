@@ -148,6 +148,21 @@ func TestParseFlags_HelpReturnsNil(t *testing.T) {
 	}
 }
 
+func TestParseFlags_FlagsOnlyReturnsEmptyNotNil(t *testing.T) {
+	var dry string
+	flags := map[string]*string{"dry-run": &dry}
+	pos, err := parseFlags([]string{"--dry-run"}, flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pos == nil {
+		t.Fatal("positional should be empty slice, not nil, when args were non-empty")
+	}
+	if len(pos) != 0 {
+		t.Errorf("len = %d", len(pos))
+	}
+}
+
 func TestParseFlags_UnknownFlag_ReturnsError(t *testing.T) {
 	oldStderr := os.Stderr
 	_, w, _ := os.Pipe()

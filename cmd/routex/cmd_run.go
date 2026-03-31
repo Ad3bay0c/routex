@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -35,7 +36,10 @@ Examples:
   routex run agents.yaml --dry-run`
 
 func runCommand(args []string) error {
-	// ── flags ─────────────────────────────────────────────────────
+	return runCommandTo(os.Stdout, os.Stderr, args)
+}
+
+func runCommandTo(stdout, stderr io.Writer, args []string) error {
 	var (
 		envFile  string
 		task     string
@@ -58,16 +62,16 @@ func runCommand(args []string) error {
 
 	positional, err := parseFlags(args, flags)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, runUsage)
+		fmt.Fprintln(stderr, runUsage)
 		return err
 	}
 	if positional == nil {
-		fmt.Println(runUsage)
+		fmt.Fprintln(stdout, runUsage)
 		return nil
 	}
 	if len(positional) < 1 {
-		fmt.Fprintln(os.Stderr, runUsage)
-		return fatalf("agents.yaml path is required")
+		fmt.Fprintln(stderr, runUsage)
+		return fatalfTo(stderr, "agents.yaml path is required")
 	}
 
 	configPath := positional[0]
@@ -84,7 +88,7 @@ func runCommand(args []string) error {
 	// load and validate config
 	rt, err := routex.LoadConfig(configPath, loadOpts...)
 	if err != nil {
-		return fatalf("%v", err)
+		return fatalfTo(stderr, "%v", err)
 	}
 
 	// Apply flag overrides that need a live runtime
@@ -97,7 +101,7 @@ func runCommand(args []string) error {
 	if timeout != "" {
 		d, err := time.ParseDuration(timeout)
 		if err != nil {
-			return fatalf("invalid --timeout %q: must be a Go duration like 5m or 30s", timeout)
+			return fatalfTo(stderr, "invalid --timeout %q: must be a Go duration like 5m or 30s", timeout)
 		}
 		t := rt.GetTask()
 		t.MaxDuration = d
@@ -110,7 +114,7 @@ func runCommand(args []string) error {
 
 	// dry-run: print plan and exit
 	if dryRun == "true" {
-		return printExecutionPlan(rt, configPath)
+		return printExecutionPlan(stdout, rt, configPath)
 	}
 
 	// run with graceful shutdown on Ctrl+C / SIGTERM
@@ -122,14 +126,14 @@ func runCommand(args []string) error {
 	go func() {
 		select {
 		case sig := <-sigCh:
-			fmt.Fprintf(os.Stderr, "\nroutex: received %s — shutting down gracefully...\n", sig)
+			fmt.Fprintf(stderr, "\nroutex: received %s — shutting down gracefully...\n", sig)
 			cancel()
 		case <-ctx.Done():
 		}
 	}()
 
 	if jsonOut != "true" {
-		printRunHeader(configPath, rt.GetTask())
+		printRunHeader(stdout, configPath, rt.GetTask())
 	}
 
 	start := time.Now()
@@ -139,70 +143,70 @@ func runCommand(args []string) error {
 	rt.Stop()
 
 	if jsonOut == "true" {
-		return printResultJSON(result, runErr)
+		return printResultJSON(stdout, stderr, result, runErr)
 	}
-	return printResultHuman(result, runErr, elapsed)
+	return printResultHuman(stdout, stderr, result, runErr, elapsed)
 }
 
 // printRunHeader prints a compact summary before execution starts.
-func printRunHeader(configPath string, task routex.Task) {
-	fmt.Printf("\nroutex run  %s\n", configPath)
+func printRunHeader(w io.Writer, configPath string, task routex.Task) {
+	fmt.Fprintf(w, "\nroutex run  %s\n", configPath)
 	if task.Input != "" {
 		input := task.Input
 		if len(input) > 80 {
 			input = input[:77] + "..."
 		}
-		fmt.Printf("task        %s\n", input)
+		fmt.Fprintf(w, "task        %s\n", input)
 	}
 	if task.OutputFile != "" {
-		fmt.Printf("output      %s\n", task.OutputFile)
+		fmt.Fprintf(w, "output      %s\n", task.OutputFile)
 	}
 	if task.MaxDuration > 0 {
-		fmt.Printf("timeout     %s\n", task.MaxDuration)
+		fmt.Fprintf(w, "timeout     %s\n", task.MaxDuration)
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 }
 
 // printResultHuman prints a human-readable result summary.
-func printResultHuman(result routex.Result, runErr error, elapsed time.Duration) error {
+func printResultHuman(stdout, stderr io.Writer, result routex.Result, runErr error, elapsed time.Duration) error {
 	if runErr != nil && len(result.AgentResults) == 0 {
-		return fatalf("run failed: %v", runErr)
+		return fatalfTo(stderr, "run failed: %v", runErr)
 	}
 
-	fmt.Println("─────────────────────────────────────────")
+	fmt.Fprintln(stdout, "─────────────────────────────────────────")
 
 	for id, ar := range result.AgentResults {
 		status := "✓"
 		if ar.Error != nil {
 			status = "✗"
 		}
-		fmt.Printf("  %s %-20s  tokens: %-5d  calls: %d\n",
+		fmt.Fprintf(stdout, "  %s %-20s  tokens: %-5d  calls: %d\n",
 			status, id, ar.TokensUsed, len(ar.ToolCalls),
 		)
 		if ar.Error != nil {
-			fmt.Printf("    error: %v\n", ar.Error)
+			fmt.Fprintf(stdout, "    error: %v\n", ar.Error)
 		}
 	}
 
-	fmt.Println("─────────────────────────────────────────")
-	fmt.Printf("  tokens  %d\n", result.TokensUsed)
-	fmt.Printf("  time    %s\n", elapsed.Round(time.Millisecond))
+	fmt.Fprintln(stdout, "─────────────────────────────────────────")
+	fmt.Fprintf(stdout, "  tokens  %d\n", result.TokensUsed)
+	fmt.Fprintf(stdout, "  time    %s\n", elapsed.Round(time.Millisecond))
 	if result.TraceID != "" {
-		fmt.Printf("  trace   %s\n", result.TraceID)
+		fmt.Fprintf(stdout, "  trace   %s\n", result.TraceID)
 	}
 	if result.OutputFile != "" {
-		fmt.Printf("  output  %s\n", result.OutputFile)
+		fmt.Fprintf(stdout, "  output  %s\n", result.OutputFile)
 	}
-	fmt.Println()
+	fmt.Fprintln(stdout)
 
 	if runErr != nil {
-		return fatalf("run completed with errors: %v", runErr)
+		return fatalfTo(stderr, "run completed with errors: %v", runErr)
 	}
 	return nil
 }
 
 // printResultJSON prints the result as JSON for scripting/CI use.
-func printResultJSON(result routex.Result, runErr error) error {
+func printResultJSON(stdout, stderr io.Writer, result routex.Result, runErr error) error {
 	type agentJSON struct {
 		ID         string `json:"id"`
 		TokensUsed int    `json:"tokens_used"`
@@ -241,9 +245,9 @@ func printResultJSON(result routex.Result, runErr error) error {
 
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
-		return fatalf("marshal result: %v", err)
+		return fatalfTo(stderr, "marshal result: %v", err)
 	}
-	fmt.Println(string(data))
+	fmt.Fprintln(stdout, string(data))
 
 	if runErr != nil {
 		return runErr
@@ -252,12 +256,12 @@ func printResultJSON(result routex.Result, runErr error) error {
 }
 
 // printExecutionPlan prints the wave-by-wave execution order without running.
-func printExecutionPlan(rt *routex.Runtime, configPath string) error {
-	fmt.Printf("\nroutex dry-run  %s\n\n", configPath)
+func printExecutionPlan(w io.Writer, rt *routex.Runtime, configPath string) error {
+	fmt.Fprintf(w, "\nroutex dry-run  %s\n\n", configPath)
 
 	plan := rt.ExecutionPlan()
 	for i, wave := range plan {
-		fmt.Printf("  wave %d\n", i+1)
+		fmt.Fprintf(w, "  wave %d\n", i+1)
 		for _, agent := range wave {
 			deps := ""
 			if len(agent.DependsOn) > 0 {
@@ -267,14 +271,14 @@ func printExecutionPlan(rt *routex.Runtime, configPath string) error {
 			if agent.LLMProvider != "" {
 				llmNote = fmt.Sprintf("  [%s / %s]", agent.LLMProvider, agent.LLMModel)
 			}
-			fmt.Printf("    %-20s%s%s\n", agent.ID, deps, llmNote)
+			fmt.Fprintf(w, "    %-20s%s%s\n", agent.ID, deps, llmNote)
 		}
 	}
 
-	fmt.Println()
-	fmt.Println("Config is valid. Run without --dry-run to execute.")
-	fmt.Println()
-	fmt.Println("Note: MCP tools are not verified during dry-run — the server")
-	fmt.Println("is contacted only when 'routex run' actually starts.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Config is valid. Run without --dry-run to execute.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Note: MCP tools are not verified during dry-run — the server")
+	fmt.Fprintln(w, "is contacted only when 'routex run' actually starts.")
 	return nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -84,8 +85,13 @@ Run 'routex <command> --help' for details on a specific command.
 
 // fatalf prints a formatted error to stderr and returns an error.
 func fatalf(format string, args ...any) error {
+	return fatalfTo(os.Stderr, format, args...)
+}
+
+// fatalfTo prints a formatted error to dst and returns an error (for tests).
+func fatalfTo(dst io.Writer, format string, args ...any) error {
 	msg := fmt.Sprintf(format, args...)
-	fmt.Fprintln(os.Stderr, "error:", msg)
+	fmt.Fprintln(dst, "error:", msg)
 	return fmt.Errorf("%s", msg)
 }
 
@@ -146,6 +152,12 @@ func parseFlags(args []string, known map[string]*string) ([]string, error) {
 		return nil, unknownFlagError(name, known)
 	}
 
+	// Distinguish "no argv tokens" (nil → caller prints usage) from
+	// "flags but no file path" (empty slice → caller errors) and from
+	// explicit --help (early return nil above).
+	if positional == nil && len(args) > 0 {
+		positional = []string{}
+	}
 	return positional, nil
 }
 
