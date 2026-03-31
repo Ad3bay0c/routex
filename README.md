@@ -3,7 +3,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/Ad3bay0c/routex.svg)](https://pkg.go.dev/github.com/Ad3bay0c/routex)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Ad3bay0c/routex)](https://goreportcard.com/report/github.com/Ad3bay0c/routex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://github.com/Ad3bay0c/routex/actions/workflows/ci.yml/badge.svg)](https://github.com/Ad3bay0c/routex/actions/workflows/ci.yml)
+[![CI](https://github.com/Ad3bay0c/routex/actions/workflows/ci.yaml/badge.svg)](https://github.com/Ad3bay0c/routex/actions/workflows/ci.yaml)
 
 
 **A lightweight AI agent runtime for Go.**
