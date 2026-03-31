@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -34,6 +35,9 @@ type ScrapeTool struct {
 	client   *http.Client
 	apiKey   string
 	maxChars int
+	// baseURL is the ScrapingBee API path prefix (must end with / before ?).
+	// Empty means https://app.scrapingbee.com/api/v1/ — non-empty is for tests.
+	baseURL string
 }
 
 // scrapeInput is the JSON the LLM sends when calling this tool.
@@ -122,8 +126,16 @@ func (t *ScrapeTool) Execute(ctx context.Context, input json.RawMessage) (json.R
 	// — build the ScrapingBee API URL
 	// ScrapingBee proxies the request through a real Chromium browser.
 	// return_page_source=false means we get the rendered DOM, not raw HTML.
+	apiBase := t.baseURL
+	if apiBase == "" {
+		apiBase = "https://app.scrapingbee.com/api/v1/"
+	}
+	if !strings.HasSuffix(apiBase, "/") {
+		apiBase += "/"
+	}
 	apiURL := fmt.Sprintf(
-		"https://app.scrapingbee.com/api/v1/?api_key=%s&url=%s&render_js=%s&return_page_source=false",
+		"%s?api_key=%s&url=%s&render_js=%s&return_page_source=false",
+		apiBase,
 		t.apiKey,
 		url.QueryEscape(params.URL),
 		renderJS,

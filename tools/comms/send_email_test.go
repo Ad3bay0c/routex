@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Ad3bay0c/routex/tools"
 )
 
 func mustMarshal(t *testing.T, v any) json.RawMessage {
@@ -280,6 +282,14 @@ func TestNewSendEmailTool_MissingFromEmail(t *testing.T) {
 	}
 }
 
+func TestSendEmail_InvalidJSON(t *testing.T) {
+	tool, _ := NewSendEmailTool("sendgrid", "key", "a@b.com", "")
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{`))
+	if err == nil || !strings.Contains(err.Error(), "invalid input") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestSendEmail_MissingTo(t *testing.T) {
 	tool, _ := NewSendEmailTool("sendgrid", "key", "a@b.com", "")
 	_, err := tool.Execute(context.Background(), mustMarshal(t, map[string]any{
@@ -336,4 +346,217 @@ func TestSendEmail_NameAndSchema(t *testing.T) {
 			t.Errorf("parameter %q should be Required=true", p)
 		}
 	}
+}
+
+func TestSendEmailBuiltin_MissingAPIKey(t *testing.T) {
+	_, err := tools.Resolve("send_email", tools.ToolConfig{
+		Name:  "send_email",
+		Extra: map[string]string{"from_email": "a@b.com"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "api_key") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSendEmailBuiltin_MissingFromEmail(t *testing.T) {
+	_, err := tools.Resolve("send_email", tools.ToolConfig{
+		Name:   "send_email",
+		APIKey: "secret",
+		Extra:  map[string]string{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "from_email") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSendEmailBuiltin_Success(t *testing.T) {
+	tool, err := tools.Resolve("send_email", tools.ToolConfig{
+		Name:   "send_email",
+		APIKey: "sg-key",
+		Extra: map[string]string{
+			"from_email": "agent@example.com",
+			"from_name":  "Bot",
+			"provider":   "sendgrid",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tool.Name() != "send_email" {
+		t.Errorf("name = %q", tool.Name())
+	}
+}
+
+func TestSendGrid_SendFrom_Forbidden(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	provider := &sendGridProvider{client: srv.Client(), url: srv.URL}
+	tool := &SendEmailTool{provider: provider, fromEmail: "a@b.com"}
+
+	_, err := tool.Execute(context.Background(), mustMarshal(t, map[string]any{
+		"to": "r@x.com", "subject": "S", "body": "b",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSendGrid_SendFrom_DefaultError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write([]byte("upstream"))
+	}))
+	t.Cleanup(srv.Close)
+
+	provider := &sendGridProvider{client: srv.Client(), url: srv.URL}
+	tool := &SendEmailTool{provider: provider, fromEmail: "a@b.com"}
+
+	_, err := tool.Execute(context.Background(), mustMarshal(t, map[string]any{
+		"to": "r@x.com", "subject": "S", "body": "b",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "418") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSendGrid_SendFrom_StatusOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Message-Id", "ok-200")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	provider := &sendGridProvider{client: srv.Client(), url: srv.URL}
+	tool := &SendEmailTool{provider: provider, fromEmail: "a@b.com"}
+
+	out, err := tool.Execute(context.Background(), mustMarshal(t, map[string]any{
+		"to": "r@x.com", "subject": "S", "body": "b",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o sendEmailOutput
+	mustUnmarshal(t, out, &o)
+	if o.MessageID != "ok-200" {
+		t.Errorf("MessageID = %q", o.MessageID)
+	}
+}
+
+func TestResend_SendFrom_Created(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "created-id"})
+	}))
+	t.Cleanup(srv.Close)
+
+	provider := &resendProvider{client: srv.Client(), url: srv.URL, apiKey: "k"}
+	tool := &SendEmailTool{provider: provider, fromEmail: "a@b.com"}
+
+	out, err := tool.Execute(context.Background(), mustMarshal(t, map[string]any{
+		"to": "r@x.com", "subject": "S", "body": "plain",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o sendEmailOutput
+	mustUnmarshal(t, out, &o)
+	if o.MessageID != "created-id" {
+		t.Errorf("MessageID = %q", o.MessageID)
+	}
+}
+
+func TestResend_SendFrom_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("bad"))
+	}))
+	t.Cleanup(srv.Close)
+
+	provider := &resendProvider{client: srv.Client(), url: srv.URL}
+	tool := &SendEmailTool{provider: provider, fromEmail: "a@b.com"}
+
+	_, err := tool.Execute(context.Background(), mustMarshal(t, map[string]any{
+		"to": "r@x.com", "subject": "S", "body": "b",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestResend_SendFrom_UnmarshalIDIgnored(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"not":"id"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	provider := &resendProvider{client: srv.Client(), url: srv.URL}
+	tool := &SendEmailTool{provider: provider, fromEmail: "a@b.com"}
+
+	out, err := tool.Execute(context.Background(), mustMarshal(t, map[string]any{
+		"to": "r@x.com", "subject": "S", "body": "b",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o sendEmailOutput
+	mustUnmarshal(t, out, &o)
+	if o.MessageID != "" {
+		t.Errorf("MessageID = %q, want empty", o.MessageID)
+	}
+	if !o.Success {
+		t.Error("want success")
+	}
+}
+
+func TestSendGridProvider_LegacySend_Accepted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		from := jsonDecodeMap(t, r)
+		if from["from"].(map[string]any)["email"] != "noreply@example.com" {
+			t.Errorf("legacy send uses placeholder from: %v", from["from"])
+		}
+		w.Header().Set("X-Message-Id", "legacy-1")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+
+	p := &sendGridProvider{client: srv.Client(), url: srv.URL, apiKey: "k"}
+	id, err := p.send(context.Background(), "to@x.com", "sub", "hello", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "legacy-1" {
+		t.Errorf("id = %q", id)
+	}
+}
+
+func TestResendProvider_LegacySend_OK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "leg-res"})
+	}))
+	t.Cleanup(srv.Close)
+
+	p := &resendProvider{client: srv.Client(), url: srv.URL, apiKey: "k"}
+	id, err := p.send(context.Background(), "to@x.com", "sub", "body", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "leg-res" {
+		t.Errorf("id = %q", id)
+	}
+}
+
+func jsonDecodeMap(t *testing.T, r *http.Request) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m
 }
