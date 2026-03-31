@@ -1,40 +1,33 @@
+version: "2"
+
 run:
   timeout: 5m
-  go: "1.25"
 
 linters:
   enable:
     - govet        # reports suspicious constructs
     - errcheck     # checks unchecked errors
     - staticcheck  # comprehensive static analysis
+    - ineffassign  # detects ineffectual assignments
     - unused       # checks for unused code
     - gosimple     # suggests simplifications
-    - ineffassign  # detects ineffectual assignments
-    - typecheck    # like go build — catches type errors
 
   disable:
     - exhaustive   # too noisy for switch statements on external types
-    - wrapcheck    # too strict for internal packages
 
-linters-settings:
-  errcheck:
-    # These are acceptable to ignore — logging failures and close errors
-    # on response bodies are conventional in Go and not worth wrapping
-    ignore: "fmt:.*,io/fs:PathError"
-
+settings:
   govet:
     enable:
       - shadow     # catch variable shadowing bugs
 
-issues:
-  exclude-rules:
-    # Test files can use dot imports and have unused exports
+exclusions:
+  rules:
+    # Test files have different conventions
     - path: "_test\\.go"
       linters:
         - errcheck
-        - unused
 
-    # Examples are allowed to be simple without full error handling
+    # Examples are intentionally simple
     - path: "examples/"
       linters:
         - errcheck
