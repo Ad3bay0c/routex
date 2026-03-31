@@ -400,6 +400,7 @@ api_key: "env:MY_KEY"                # → X-Api-Key: KEY
 # 4. Custom header
 extra:
   header_X-Custom-Header: "value"    # → X-Custom-Header: value
+  header_API-KEY: "value"    # → API-KEY: value
 ```
 
 Default query params (sent on every request):
