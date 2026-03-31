@@ -11,6 +11,14 @@ cp .env.example .env   # add your API key
 routex run agents.yaml
 ```
 
+To depend on Routex from your own Go program (not the CLI):
+
+```bash
+go get github.com/Ad3bay0c/routex@latest
+```
+
+See [Using it as a library](#using-it-as-a-library) for imports and examples.
+
 ---
 
 ## Why Routex?
@@ -119,6 +127,19 @@ routex run agents.yaml --env-file .env.staging --output ./reports/result.md
 ### Using it as a library
 
 Import Routex into any Go application. Task input can come from an HTTP request, message queue, database — anywhere.
+
+**Add the module to your project** (this is the library dependency — unlike `go install`, which only builds the `routex` CLI):
+
+```bash
+go get github.com/Ad3bay0c/routex@latest
+```
+
+Then import the root package and any subpackages you need (see below). If you add imports first, `go mod tidy` will record the module as well.
+
+| Goal | Command |
+|------|---------|
+| Use Routex from your Go code | `go get github.com/Ad3bay0c/routex@version` |
+| Install the `routex` CLI only | `go install github.com/Ad3bay0c/routex/cmd/routex@version` |
 
 **Tool imports — opt in to what you need**
 
