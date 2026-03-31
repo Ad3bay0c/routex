@@ -13,9 +13,6 @@ import (
 	"github.com/Ad3bay0c/routex/tools"
 )
 
-// supervisorDecision aliases supervisor.Decision for cleaner test code.
-type supervisorDecision = Decision
-
 type testLogWriter struct{ t *testing.T }
 
 func (w testLogWriter) Write(p []byte) (int, error) {

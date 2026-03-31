@@ -55,8 +55,8 @@ func main() {
 
 	// Ensure directories exist
 	for _, dir := range []string{"data", "outputs"} {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			log.Fatalf("create %s: %v", dir, err)
+		if mkdirErr := os.MkdirAll(dir, 0755); mkdirErr != nil {
+			log.Fatalf("create %s: %v", dir, mkdirErr)
 		}
 	}
 

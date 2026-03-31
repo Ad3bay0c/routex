@@ -211,7 +211,7 @@ func (t *GenerateImageTool) Execute(ctx context.Context, input json.RawMessage) 
 	if err != nil {
 		return nil, fmt.Errorf("generate_image: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -231,8 +231,8 @@ func (t *GenerateImageTool) Execute(ctx context.Context, input json.RawMessage) 
 
 	// — parse the response
 	var apiResp dalleResponse
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return nil, fmt.Errorf("generate_image: parse response: %w", err)
+	if unmarshalErr := json.Unmarshal(respBody, &apiResp); unmarshalErr != nil {
+		return nil, fmt.Errorf("generate_image: parse response: %w", unmarshalErr)
 	}
 	if apiResp.Error != nil {
 		return nil, fmt.Errorf("generate_image: api error: %s", apiResp.Error.Message)
@@ -314,7 +314,7 @@ func init() {
 			return nil, errors.New(
 				"generate_image requires an api_key\n" +
 					"  add to agents.yaml:  api_key: \"env:OPENAI_API_KEY\"\n" +
-					"  then set the env:    export OPENAI_API_KEY=sk-...",
+					"  then set the OPENAI_API_KEY environment variable to your API key",
 			)
 		}
 		return GenerateImage(cfg.APIKey, cfg.BaseDir), nil

@@ -174,7 +174,7 @@ func (a *OpenAIAdapter) Complete(ctx context.Context, req Request) (Response, er
 	if err != nil {
 		return Response{}, fmt.Errorf("openai: http: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer httpResp.Body.Close() //nolint:errcheck
 
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {

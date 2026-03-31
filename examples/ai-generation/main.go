@@ -56,8 +56,8 @@ func main() {
 
 	// ── Ensure output directories exist ──────────────────────────
 	for _, dir := range []string{"outputs", "outputs/images"} {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			log.Fatalf("create %s: %v", dir, err)
+		if mkdirErr := os.MkdirAll(dir, 0755); mkdirErr != nil {
+			log.Fatalf("create %s: %v", dir, mkdirErr)
 		}
 	}
 

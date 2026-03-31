@@ -177,7 +177,7 @@ func (a *AnthropicAdapter) Complete(ctx context.Context, req Request) (Response,
 	if err != nil {
 		return Response{}, fmt.Errorf("anthropic: http: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer httpResp.Body.Close() //nolint:errcheck
 
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {

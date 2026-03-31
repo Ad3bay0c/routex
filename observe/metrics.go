@@ -135,7 +135,7 @@ func NewMetrics(serviceName, addr string) (*Metrics, error) {
 	}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		w.Write([]byte("ok")) //nolint:errcheck
 	})
 
 	m.server = &http.Server{

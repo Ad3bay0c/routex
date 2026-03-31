@@ -156,7 +156,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (jso
 	if err != nil {
 		return nil, fmt.Errorf("web_search: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("web_search: api returned status %d", resp.StatusCode)

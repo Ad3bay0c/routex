@@ -139,7 +139,7 @@ func (t *ScrapeTool) Execute(ctx context.Context, input json.RawMessage) (json.R
 	if err != nil {
 		return nil, fmt.Errorf("scrape: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	// — handle errors
 	switch resp.StatusCode {

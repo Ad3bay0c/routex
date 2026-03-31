@@ -288,7 +288,7 @@ func (t *HTTPRequestTool) Execute(ctx context.Context, input json.RawMessage) (j
 			Error:  err.Error(),
 		})
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	// — read body
 	rawBody, err := io.ReadAll(io.LimitReader(resp.Body, int64(t.maxBodyBytes)))

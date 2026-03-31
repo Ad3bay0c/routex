@@ -63,8 +63,8 @@ func main() {
 		"scrape will fail — get a free key at https://www.scrapingbee.com")
 
 	// ── Ensure output directory exists ────────────────────────────
-	if err := os.MkdirAll("outputs", 0755); err != nil {
-		log.Fatalf("create outputs dir: %v", err)
+	if mkdirErr := os.MkdirAll("outputs", 0755); mkdirErr != nil {
+		log.Fatalf("create outputs dir: %v", mkdirErr)
 	}
 
 	// ── Run ───────────────────────────────────────────────────────

@@ -149,7 +149,7 @@ func (t *WikipediaTool) Execute(ctx context.Context, input json.RawMessage) (jso
 	if err != nil {
 		return nil, fmt.Errorf("wikipedia: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	// — handle errors with helpful messages
 	if resp.StatusCode == http.StatusNotFound {

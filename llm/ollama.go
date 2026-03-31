@@ -152,7 +152,7 @@ func (a *OllamaAdapter) ping() error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	// Any HTTP response means the server is up — even a 404 or 401.
 	// We only care that something answered, not what it said.

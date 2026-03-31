@@ -143,7 +143,7 @@ func (t *BraveSearchTool) Execute(ctx context.Context, input json.RawMessage) (j
 	if err != nil {
 		return nil, fmt.Errorf("brave_search: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	// — handle errors clearly so the LLM knows what went wrong
 	switch resp.StatusCode {

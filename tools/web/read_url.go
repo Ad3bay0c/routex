@@ -128,7 +128,7 @@ func (t *ReadURLTool) Execute(ctx context.Context, input json.RawMessage) (json.
 	if err != nil {
 		return nil, fmt.Errorf("read_url: fetch %q: %w", params.URL, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("read_url: %q returned status %d", params.URL, resp.StatusCode)

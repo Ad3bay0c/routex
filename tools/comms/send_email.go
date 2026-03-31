@@ -196,7 +196,7 @@ func (p *sendGridProvider) send(ctx context.Context, to, subject, body string, i
 	if err != nil {
 		return "", fmt.Errorf("send_email(sendgrid): request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	switch resp.StatusCode {
 	case http.StatusAccepted, http.StatusOK:
@@ -252,7 +252,7 @@ func (p *resendProvider) send(ctx context.Context, to, subject, body string, isH
 	if err != nil {
 		return "", fmt.Errorf("send_email(resend): request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // body drained in success/error paths
 
 	respBody, _ := io.ReadAll(resp.Body)
 
@@ -337,7 +337,7 @@ func (p *sendGridProvider) sendFrom(ctx context.Context, fromEmail, fromName, to
 	if err != nil {
 		return "", fmt.Errorf("send_email(sendgrid): %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // body drained in success/error paths
 
 	switch resp.StatusCode {
 	case http.StatusAccepted, http.StatusOK:
@@ -389,7 +389,7 @@ func (p *resendProvider) sendFrom(ctx context.Context, fromEmail, fromName, to, 
 	if err != nil {
 		return "", fmt.Errorf("send_email(resend): %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // body drained in success/error paths
 
 	respBody, _ := io.ReadAll(resp.Body)
 	switch resp.StatusCode {
@@ -397,7 +397,9 @@ func (p *resendProvider) sendFrom(ctx context.Context, fromEmail, fromName, to, 
 		var result struct {
 			ID string `json:"id"`
 		}
-		json.Unmarshal(respBody, &result)
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return "", nil // sent but couldn't parse ID — not fatal
+		}
 		return result.ID, nil
 	case http.StatusUnauthorized:
 		return "", errors.New("send_email(resend): invalid API key")

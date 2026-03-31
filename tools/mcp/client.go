@@ -265,7 +265,7 @@ func (c *Client) rpcCaptureHeaders(ctx context.Context, method string, params an
 	if err != nil {
 		return nil, fmt.Errorf("http: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer httpResp.Body.Close() //nolint:errcheck
 
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {
@@ -337,8 +337,7 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 	if err != nil {
 		return err
 	}
-	httpResp.Body.Close()
-	return nil
+	return httpResp.Body.Close()
 }
 
 func joinStrings(ss []string, sep string) string {

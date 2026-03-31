@@ -221,7 +221,7 @@ func LoadConfig(path string, opts ...LoadOption) (*Runtime, error) {
 			EnvFile string `yaml:"env_file"`
 		} `yaml:"runtime"`
 	}
-	if err := yaml.Unmarshal(data, &peek); err == nil {
+	if peekErr := yaml.Unmarshal(data, &peek); peekErr == nil {
 		// WithEnvFile option takes precedence over env_file: in YAML.
 		// This lets the CLI pass --env-file directly without touching
 		// env vars or the config file.
@@ -229,15 +229,15 @@ func LoadConfig(path string, opts ...LoadOption) (*Runtime, error) {
 		if envFile == "" {
 			envFile = peek.Runtime.EnvFile
 		}
-		if err := loadEnvFile(envFile, path); err != nil {
-			return nil, fmt.Errorf("routex: load env file: %w", err)
+		if loadErr := loadEnvFile(envFile, path); loadErr != nil {
+			return nil, fmt.Errorf("routex: load env file: %w", loadErr)
 		}
 	}
 
 	// — full YAML parse now that env vars are loaded into os.Environ
 	var raw yamlFile
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("routex: invalid YAML in %q: %w", path, err)
+	if rawErr := yaml.Unmarshal(data, &raw); rawErr != nil {
+		return nil, fmt.Errorf("routex: invalid YAML in %q: %w", path, rawErr)
 	}
 
 	// — apply WithTaskInput override before buildConfig runs

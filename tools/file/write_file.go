@@ -156,7 +156,7 @@ func (t *WriteFileTool) Execute(_ context.Context, input json.RawMessage) (json.
 		if err != nil {
 			return nil, fmt.Errorf("write_file: open for append %q: %w", cleanPath, err)
 		}
-		defer f.Close()
+		defer f.Close() //nolint:errcheck
 		_, writeErr = f.WriteString(params.Content)
 	} else {
 		// WriteFile creates or truncates — clean overwrite

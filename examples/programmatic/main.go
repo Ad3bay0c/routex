@@ -96,8 +96,8 @@ func main() {
 	})
 
 	// ───────────────── Start the runtime ─────────────────────────────────
-	if err := rt.Start(ctx); err != nil {
-		log.Fatalf("start runtime: %v", err)
+	if startErr := rt.Start(ctx); startErr != nil {
+		log.Fatalf("start runtime: %v", startErr)
 	}
 	defer rt.Stop()
 

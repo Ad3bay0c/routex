@@ -161,7 +161,7 @@ func (t *TranslateTool) Execute(ctx context.Context, input json.RawMessage) (jso
 	if err != nil {
 		return nil, fmt.Errorf("translate: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	// — handle errors with clear messages
 	switch resp.StatusCode {

@@ -23,6 +23,7 @@ func versionCommandTo(out io.Writer, args []string) error {
 
 	_, err := parseFlags(args, flags)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, versionUsage)
 		return err
 	}
 

@@ -32,8 +32,8 @@ func main() {
 	}
 
 	outputDir := getEnvOr("OUTPUT_DIR", "./outputs")
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		log.Fatalf("create output dir: %v", err)
+	if mkdirErr := os.MkdirAll(outputDir, 0755); mkdirErr != nil {
+		log.Fatalf("create output dir: %v", mkdirErr)
 	}
 
 	fmt.Println("Starting weather crew...")

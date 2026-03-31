@@ -181,7 +181,7 @@ func (t *SummariseTool) Execute(ctx context.Context, input json.RawMessage) (jso
 	if err != nil {
 		return nil, fmt.Errorf("summarise: api call failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, fmt.Errorf("summarise: invalid API key — check ANTHROPIC_API_KEY")
@@ -229,7 +229,7 @@ func init() {
 			return nil, fmt.Errorf(
 				"summarise requires an api_key\n" +
 					"  add to agents.yaml:  api_key: \"env:ANTHROPIC_API_KEY\"\n" +
-					"  then set the env:    export ANTHROPIC_API_KEY=sk-ant-...",
+					"  then set the ANTHROPIC_API_KEY environment variable to your API key",
 			)
 		}
 		return Summarise(cfg.APIKey), nil
