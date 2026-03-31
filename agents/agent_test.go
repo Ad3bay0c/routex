@@ -159,6 +159,19 @@ func newTestAgent(t *testing.T, adapter llm.Adapter, toolList ...tools.Tool) *Ag
 	return New(cfg, adapter, mem, reg, logger, nil, nil)
 }
 
+// startTestAgentRun runs ag.Run in the background and blocks in t.Cleanup until it exits.
+// This prevents data races: slog must not call t.Log after the test goroutine starts teardown.
+func startTestAgentRun(t *testing.T, ag *Agent, ctx context.Context) {
+	t.Helper()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ag.Run(ctx)
+	}()
+	t.Cleanup(wg.Wait)
+}
+
 type testLogWriter struct{ t *testing.T }
 
 func (w testLogWriter) Write(p []byte) (int, error) {
@@ -174,7 +187,7 @@ func TestAgent_SuccessOnFirstAttempt(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	go ag.Run(ctx)
+	startTestAgentRun(t, ag, ctx)
 
 	ag.Inbox <- Message{RunID: "run-1", Input: "what is 6 times 7?"}
 	result := <-ag.Output()
@@ -201,7 +214,7 @@ func TestAgent_BothChannelsReceiveResult(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	go ag.Run(ctx)
+	startTestAgentRun(t, ag, ctx)
 	ag.Inbox <- Message{RunID: "run-1", Input: "do something"}
 
 	var outputResult, notifyResult Result
@@ -252,7 +265,7 @@ func TestAgent_ToolCallThenTextResponse(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	go ag.Run(ctx)
+	startTestAgentRun(t, ag, ctx)
 	ag.Inbox <- Message{RunID: "run-1", Input: "what is the weather in Lagos?"}
 
 	result := <-ag.Output()
@@ -296,7 +309,7 @@ func TestAgent_MultiToolBatch_RunsConcurrently(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	go ag.Run(ctx)
+	startTestAgentRun(t, ag, ctx)
 
 	start := time.Now()
 	ag.Inbox <- Message{RunID: "run-1", Input: "research Go"}
@@ -349,7 +362,7 @@ func TestAgent_ToolFailureReportedInResult(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	go ag.Run(ctx)
+	startTestAgentRun(t, ag, ctx)
 	ag.Inbox <- Message{RunID: "run-1", Input: "search for something"}
 
 	result := <-ag.Output()
@@ -384,7 +397,7 @@ func TestAgent_DuplicateToolCallRedirect(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	go ag.Run(ctx)
+	startTestAgentRun(t, ag, ctx)
 	ag.Inbox <- Message{RunID: "run-1", Input: "search for something"}
 
 	result := <-ag.Output()
@@ -416,7 +429,7 @@ func TestAgent_TotalToolBudgetRedirect(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	go ag.Run(ctx)
+	startTestAgentRun(t, ag, ctx)
 	ag.Inbox <- Message{RunID: "run-1", Input: "search many things"}
 
 	result := <-ag.Output()
@@ -434,7 +447,7 @@ func TestAgent_ContextCancellation(t *testing.T) {
 	defer cancel()
 
 	ag := newTestAgent(t, &blockingAdapter{block: make(chan struct{})})
-	go ag.Run(ctx)
+	startTestAgentRun(t, ag, ctx)
 	ag.Inbox <- Message{RunID: "run-1", Input: "hello"}
 
 	result := <-ag.Output()
@@ -455,7 +468,7 @@ func TestAgent_MultipleSequentialTasks(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	go ag.Run(ctx)
+	startTestAgentRun(t, ag, ctx)
 
 	// First task
 	ag.Inbox <- Message{RunID: "run-1", Input: "first question"}
