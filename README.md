@@ -1,5 +1,11 @@
 # Routex
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/Ad3bay0c/routex.svg)](https://pkg.go.dev/github.com/Ad3bay0c/routex)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Ad3bay0c/routex)](https://goreportcard.com/report/github.com/Ad3bay0c/routex)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/Ad3bay0c/routex/actions/workflows/ci.yml/badge.svg)](https://github.com/Ad3bay0c/routex/actions/workflows/ci.yml)
+
+
 **A lightweight AI agent runtime for Go.**
 
 Routex lets you build, run, and supervise multi-agent AI crews using the primitives Go developers already know — goroutines, channels, and interfaces. Define your crew in a YAML file or pure Go code, wire in any LLM provider and tools, and let the runtime handle scheduling, parallelism, retries, memory, and observability.
