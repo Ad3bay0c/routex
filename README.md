@@ -3,8 +3,6 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/Ad3bay0c/routex.svg)](https://pkg.go.dev/github.com/Ad3bay0c/routex)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Ad3bay0c/routex)](https://goreportcard.com/report/github.com/Ad3bay0c/routex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://github.com/Ad3bay0c/routex/actions/workflows/ci.yaml/badge.svg)](https://github.com/Ad3bay0c/routex/actions/workflows/ci.yaml)
-
 
 **A lightweight AI agent runtime for Go.**
 
@@ -33,16 +31,16 @@ The AI agent ecosystem is almost entirely Python. Frameworks like LangGraph and 
 
 Routex is built for Go developers who want agentic capabilities without leaving the Go ecosystem.
 
-| | LangGraph | CrewAI | **Routex**                |
-|---|---|---|---------------------------|
-| Language | Python | Python | **Go**                    |
-| Concurrency model | asyncio | asyncio | **goroutines + channels** |
-| Agent supervision | none | none | **Erlang-style OTP tree** |
-| Binary size | heavy | heavy | **~10 MB single binary**   |
-| Cold start | ~2–5 s | ~2–5 s | **~50 ms**                |
-| Multi-LLM per agent | no | no | **yes**                   |
-| OpenTelemetry | partial | partial | **first-class**           |
-| Deploy target | Python env | Python env | **any OS, Docker, K8s**   |
+|                     | LangGraph  | CrewAI     | **Routex**                |
+| ------------------- | ---------- | ---------- | ------------------------- |
+| Language            | Python     | Python     | **Go**                    |
+| Concurrency model   | asyncio    | asyncio    | **goroutines + channels** |
+| Agent supervision   | none       | none       | **Erlang-style OTP tree** |
+| Binary size         | heavy      | heavy      | **~10 MB single binary**  |
+| Cold start          | ~2–5 s     | ~2–5 s     | **~50 ms**                |
+| Multi-LLM per agent | no         | no         | **yes**                   |
+| OpenTelemetry       | partial    | partial    | **first-class**           |
+| Deploy target       | Python env | Python env | **any OS, Docker, K8s**   |
 
 ---
 
@@ -50,8 +48,8 @@ Routex is built for Go developers who want agentic capabilities without leaving 
 
 - [Concepts](#concepts)
 - [Quickstart](#quickstart)
-    - [Using the CLI](#using-the-cli)
-    - [Using it as a library](#using-it-as-a-library)
+  - [Using the CLI](#using-the-cli)
+  - [Using it as a library](#using-it-as-a-library)
 - [YAML reference](#yaml-reference)
 - [Built-in tools](#built-in-tools)
 - [LLM providers](#llm-providers)
@@ -142,9 +140,9 @@ go get github.com/Ad3bay0c/routex@latest
 
 Then import the root package and any subpackages you need (see below). If you add imports first, `go mod tidy` will record the module as well.
 
-| Goal | Command |
-|------|---------|
-| Use Routex from your Go code | `go get github.com/Ad3bay0c/routex@version` |
+| Goal                          | Command                                                    |
+| ----------------------------- | ---------------------------------------------------------- |
+| Use Routex from your Go code  | `go get github.com/Ad3bay0c/routex@version`                |
 | Install the `routex` CLI only | `go install github.com/Ad3bay0c/routex/cmd/routex@version` |
 
 **Tool imports — opt in to what you need**
@@ -264,86 +262,86 @@ result, _ := rt.StartAndRun(ctx)
 
 ```yaml
 runtime:
-  name:         "my-crew"               # identifies this crew in logs and traces
-  llm_provider: "anthropic"             # anthropic | openai | ollama
-  model:        "claude-sonnet-4-6"     # model name for the chosen provider
-  api_key:      "env:ANTHROPIC_API_KEY" # env:VAR reads from environment
-  log_level:    "info"                  # debug | info | warn | error
-  env_file:     "."                     # DEVELOPMENT ONLY — load .env next to this file
+  name: "my-crew" # identifies this crew in logs and traces
+  llm_provider: "anthropic" # anthropic | openai | ollama
+  model: "claude-sonnet-4-6" # model name for the chosen provider
+  api_key: "env:ANTHROPIC_API_KEY" # env:VAR reads from environment
+  log_level: "info" # debug | info | warn | error
+  env_file: "." # DEVELOPMENT ONLY — load .env next to this file
   # base_url:   "env:CUSTOM_ENDPOINT"  # override LLM API endpoint
 
 task:
-  input:        "Research the latest Go releases"
-  output_file:  "env:OUTPUT_FILE"       # env: works in any string field
-  max_duration: "5m"                    # Go duration string — 30s, 5m, 1h
+  input: "Research the latest Go releases"
+  output_file: "env:OUTPUT_FILE" # env: works in any string field
+  max_duration: "5m" # Go duration string — 30s, 5m, 1h
 
 tools:
   # Built-in tools — declare here, auto-registered by the runtime
-  - name: "web_search"                  # DuckDuckGo, free, no key
+  - name: "web_search" # DuckDuckGo, free, no key
 
-  - name:    "brave_search"             # Higher quality, 2,000 free/month
+  - name: "brave_search" # Higher quality, 2,000 free/month
     api_key: "env:BRAVE_API_KEY"
     max_results: 5
 
-  - name: "wikipedia"                   # Free, no key needed
+  - name: "wikipedia" # Free, no key needed
     extra:
       language: "en"
 
-  - name:    "http_request"             # Call any REST API
-    api_key: "env:MY_API_KEY"           # sent as X-Api-Key header
+  - name: "http_request" # Call any REST API
+    api_key: "env:MY_API_KEY" # sent as X-Api-Key header
     extra:
-      bearer_token:    "env:MY_TOKEN"   # sent as Authorization: Bearer
-      query_api_key:   "env:OWM_KEY"    # sent as query param (e.g. OpenWeatherMap)
-      query_api_key_name: "appid"       # the param name (?appid=KEY)
-      param_units:     "metric"         # default query param on every request
-      header_Accept:   "application/json"
+      bearer_token: "env:MY_TOKEN" # sent as Authorization: Bearer
+      query_api_key: "env:OWM_KEY" # sent as query param (e.g. OpenWeatherMap)
+      query_api_key_name: "appid" # the param name (?appid=KEY)
+      param_units: "metric" # default query param on every request
+      header_Accept: "application/json"
 
-  - name:     "write_file"
-    base_dir: "./outputs"               # agents can only write inside this dir
+  - name: "write_file"
+    base_dir: "./outputs" # agents can only write inside this dir
 
-  - name:     "read_file"
+  - name: "read_file"
     base_dir: "./data"
 
-  - name: "read_url"                    # Fetch and strip HTML from any URL
+  - name: "read_url" # Fetch and strip HTML from any URL
 
-  - name:    "scrape"                   # JS-rendered pages via ScrapingBee
+  - name: "scrape" # JS-rendered pages via ScrapingBee
     api_key: "env:SCRAPINGBEE_API_KEY"
 
-  - name:    "summarise"               # LLM-powered text compression
+  - name: "summarise" # LLM-powered text compression
     api_key: "env:ANTHROPIC_API_KEY"
 
-  - name:    "translate"               # DeepL API, 500k chars/month free
+  - name: "translate" # DeepL API, 500k chars/month free
     api_key: "env:DEEPL_API_KEY"
 
-  - name:     "generate_image"         # DALL-E 3 via OpenAI
-    api_key:  "env:OPENAI_API_KEY"
+  - name: "generate_image" # DALL-E 3 via OpenAI
+    api_key: "env:OPENAI_API_KEY"
     base_dir: "./outputs/images"
 
-  - name:    "send_email"              # SendGrid or Resend
+  - name: "send_email" # SendGrid or Resend
     api_key: "env:SENDGRID_API_KEY"
     extra:
-      provider:   "sendgrid"           # sendgrid | resend
+      provider: "sendgrid" # sendgrid | resend
       from_email: "agent@example.com"
-      from_name:  "Routex Agent"
-      
-  - name:     "mcp"                     # MCP server call
+      from_name: "Routex Agent"
+
+  - name: "mcp" # MCP server call
     extra:
-      server_url:  "http://localhost:3000"
+      server_url: "http://localhost:3000"
       server_name: "github"
 
   - name: "mcp"
     extra:
-      server_url:  "http://localhost:3001"
+      server_url: "http://localhost:3001"
       server_name: "postgres"
 
 agents:
-  - id:          "researcher"          # unique within this crew
-    role:        "researcher"          # planner | researcher | writer | critic | executor
-    goal:        "Find and summarise recent Go releases"
-    tools:       ["web_search", "read_url"]
-    restart:     "one_for_one"         # one_for_one | one_for_all | rest_for_one
+  - id: "researcher" # unique within this crew
+    role: "researcher" # planner | researcher | writer | critic | executor
+    goal: "Find and summarise recent Go releases"
+    tools: ["web_search", "read_url"]
+    restart: "one_for_one" # one_for_one | one_for_all | rest_for_one
     max_retries: 2
-    timeout:     "90s"
+    timeout: "90s"
     # depends_on: []                   # list of agent IDs that must complete first
     # max_duplicate_tool_calls: 2      # redirect LLM after N identical tool calls (default: 2)
     # max_total_tool_calls: 20         # absolute tool call budget per attempt (default: 20)
@@ -354,18 +352,18 @@ agents:
     #   model:    "gpt-4o"
     #   api_key:  "env:OPENAI_API_KEY"
 
-  - id:          "writer"
-    role:        "writer"
-    goal:        "Write a markdown report. Save it as report.md"
-    tools:       ["write_file"]
-    depends_on:  ["researcher"]        # starts only after researcher finishes
-    restart:     "one_for_one"
+  - id: "writer"
+    role: "writer"
+    goal: "Write a markdown report. Save it as report.md"
+    tools: ["write_file"]
+    depends_on: ["researcher"] # starts only after researcher finishes
+    restart: "one_for_one"
     max_retries: 2
-    timeout:     "120s"
+    timeout: "120s"
 
 memory:
-  backend: "inmem"                     # inmem | redis
-  ttl:     "1h"
+  backend: "inmem" # inmem | redis
+  ttl: "1h"
   # redis_url: "env:REDIS_URL"         # required when backend is "redis"
 
 observability:
@@ -380,9 +378,9 @@ observability:
 Any string value in the YAML can read from the environment:
 
 ```yaml
-api_key:     "env:ANTHROPIC_API_KEY"   # reads os.Getenv("ANTHROPIC_API_KEY")
-output_file: "env:OUTPUT_PATH"         # works in any string field
-model:       "env:LLM_MODEL"           # even model names
+api_key: "env:ANTHROPIC_API_KEY" # reads os.Getenv("ANTHROPIC_API_KEY")
+output_file: "env:OUTPUT_PATH" # works in any string field
+model: "env:LLM_MODEL" # even model names
 ```
 
 This means your `agents.yaml` file can be committed to git with zero secrets in it.
@@ -395,18 +393,18 @@ All tools are registered automatically when listed in the `tools:` section of `a
 
 ### Search & Data
 
-| Tool | Key needed | Free tier | Description |
-|---|---|---|---|
-| `web_search` | none | unlimited | DuckDuckGo Instant Answers |
-| `brave_search` | `BRAVE_API_KEY` | 2,000/month | Structured web results with publication age |
-| `wikipedia` | none | unlimited | Wikipedia article summaries, 300+ languages |
-| `scrape` | `SCRAPINGBEE_API_KEY` | 1,000 credits/month | JS-rendered page content |
+| Tool           | Key needed            | Free tier           | Description                                 |
+| -------------- | --------------------- | ------------------- | ------------------------------------------- |
+| `web_search`   | none                  | unlimited           | DuckDuckGo Instant Answers                  |
+| `brave_search` | `BRAVE_API_KEY`       | 2,000/month         | Structured web results with publication age |
+| `wikipedia`    | none                  | unlimited           | Wikipedia article summaries, 300+ languages |
+| `scrape`       | `SCRAPINGBEE_API_KEY` | 1,000 credits/month | JS-rendered page content                    |
 
 ### Web & HTTP
 
-| Tool | Key needed | Description |
-|---|---|---|
-| `read_url` | none | Fetch and strip HTML from any URL |
+| Tool           | Key needed   | Description                                       |
+| -------------- | ------------ | ------------------------------------------------- |
+| `read_url`     | none         | Fetch and strip HTML from any URL                 |
 | `http_request` | configurable | Call any REST API — GET, POST, PUT, PATCH, DELETE |
 
 `http_request` supports four authentication patterns:
@@ -434,40 +432,40 @@ Default query params (sent on every request):
 
 ```yaml
 extra:
-  param_units: "metric"              # → ?units=metric on every request
-  param_lang:  "en"
+  param_units: "metric" # → ?units=metric on every request
+  param_lang: "en"
 ```
 
 ### File
 
-| Tool | Config | Description |
-|---|---|---|
+| Tool         | Config     | Description                           |
+| ------------ | ---------- | ------------------------------------- |
 | `write_file` | `base_dir` | Write files — sandboxed to `base_dir` |
-| `read_file` | `base_dir` | Read files — sandboxed to `base_dir` |
+| `read_file`  | `base_dir` | Read files — sandboxed to `base_dir`  |
 
 Path traversal (`../`) is blocked in both tools. Agents can only read or write inside the configured `base_dir`.
 
 ### AI & Generation
 
-| Tool | Key needed | Description |
-|---|---|---|
-| `summarise` | `ANTHROPIC_API_KEY` | LLM-powered text compression (paragraph, bullets, one-line) |
-| `translate` | `DEEPL_API_KEY` | DeepL translation, 30+ languages, 500k chars/month free |
-| `generate_image` | `OPENAI_API_KEY` | DALL-E 3 image generation, saves to disk |
+| Tool             | Key needed          | Description                                                 |
+| ---------------- | ------------------- | ----------------------------------------------------------- |
+| `summarise`      | `ANTHROPIC_API_KEY` | LLM-powered text compression (paragraph, bullets, one-line) |
+| `translate`      | `DEEPL_API_KEY`     | DeepL translation, 30+ languages, 500k chars/month free     |
+| `generate_image` | `OPENAI_API_KEY`    | DALL-E 3 image generation, saves to disk                    |
 
 ### Communication
 
-| Tool | Key needed | Providers | Description |
-|---|---|---|---|
+| Tool         | Key needed                             | Providers        | Description                         |
+| ------------ | -------------------------------------- | ---------------- | ----------------------------------- |
 | `send_email` | `SENDGRID_API_KEY` or `RESEND_API_KEY` | SendGrid, Resend | Send emails with plain text or HTML |
 
 Swap providers with one line — no code changes:
 
 ```yaml
-- name:    "send_email"
+- name: "send_email"
   api_key: "env:RESEND_API_KEY"
   extra:
-    provider:   "resend"    # was "sendgrid"
+    provider: "resend" # was "sendgrid"
     from_email: "agent@yourdomain.com"
 ```
 
@@ -479,16 +477,16 @@ Set the provider at the runtime level — all agents inherit it by default:
 
 ```yaml
 runtime:
-  llm_provider: "anthropic"           # or "openai" or "ollama"
-  model:        "claude-sonnet-4-6"
-  api_key:      "env:ANTHROPIC_API_KEY"
+  llm_provider: "anthropic" # or "openai" or "ollama"
+  model: "claude-sonnet-4-6"
+  api_key: "env:ANTHROPIC_API_KEY"
 ```
 
-| Provider | Models | Notes |
-|---|---|---|
-| `anthropic` | `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`, `claude-opus-4-6` | Default |
-| `openai` | `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini` | Also works with OpenAI-compatible APIs |
-| `ollama` | `llama3`, `mistral`, `phi3`, any installed model | Local inference, no API key needed |
+| Provider    | Models                                                              | Notes                                  |
+| ----------- | ------------------------------------------------------------------- | -------------------------------------- |
+| `anthropic` | `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`, `claude-opus-4-6` | Default                                |
+| `openai`    | `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini`                            | Also works with OpenAI-compatible APIs |
+| `ollama`    | `llama3`, `mistral`, `phi3`, any installed model                    | Local inference, no API key needed     |
 
 Switch providers by changing two lines in YAML — zero code changes.
 
@@ -501,37 +499,37 @@ Each agent can use a different LLM provider and model from the runtime default. 
 ```yaml
 runtime:
   llm_provider: "anthropic"
-  model:        "claude-haiku-4-5-20251001"   # default — fast and cheap
-  api_key:      "env:ANTHROPIC_API_KEY"
+  model: "claude-haiku-4-5-20251001" # default — fast and cheap
+  api_key: "env:ANTHROPIC_API_KEY"
 
 agents:
   # Researcher inherits Haiku — data fetching doesn't need a powerful model
-  - id:   "researcher"
+  - id: "researcher"
     role: "researcher"
     goal: "Fetch weather data from the OpenWeatherMap API"
     tools: ["http_request"]
 
   # Comparator uses GPT-4o — synthesis benefits from a larger model
-  - id:   "comparator"
+  - id: "comparator"
     role: "writer"
     goal: "Compare the weather data and write a detailed analysis"
     tools: []
     depends_on: ["researcher"]
     llm:
       provider: "openai"
-      model:    "gpt-4o"
-      api_key:  "env:OPENAI_API_KEY"
+      model: "gpt-4o"
+      api_key: "env:OPENAI_API_KEY"
 
   # Fact-checker uses Anthropic Sonnet — higher quality critique
-  - id:   "fact_checker"
+  - id: "fact_checker"
     role: "critic"
     goal: "Verify the analysis and write the final report"
     tools: ["write_file"]
     depends_on: ["comparator"]
     llm:
       provider: "anthropic"
-      model:    "claude-sonnet-4-6"
-      api_key:  "env:ANTHROPIC_API_KEY"
+      model: "claude-sonnet-4-6"
+      api_key: "env:ANTHROPIC_API_KEY"
 ```
 
 ---
@@ -570,13 +568,13 @@ Routex connects to any [MCP (Model Context Protocol)](https://modelcontextprotoc
 tools:
   - name: "mcp"
     extra:
-      server_url:  "http://localhost:3000"   # required — your MCP server URL
-      server_name: "github"                  # optional label for logs
+      server_url: "http://localhost:3000" # required — your MCP server URL
+      server_name: "github" # optional label for logs
 
   # Multiple servers supported — each is one entry
   - name: "mcp"
     extra:
-      server_url:  "http://localhost:3001"
+      server_url: "http://localhost:3001"
       server_name: "postgres"
 ```
 
@@ -584,10 +582,10 @@ Tools from the server are discovered automatically via `tools/list` at startup. 
 
 ```yaml
 agents:
-  - id:    "researcher"
-    role:  "researcher"
-    goal:  "Search GitHub for Go MCP servers"
-    tools: ["search_repos", "get_user"]   # ← names returned by the MCP server
+  - id: "researcher"
+    role: "researcher"
+    goal: "Search GitHub for Go MCP servers"
+    tools: ["search_repos", "get_user"] # ← names returned by the MCP server
 ```
 
 **Authentication** — most MCP servers require credentials. Pass them as headers using the `header_*` prefix, which supports the `env:` resolver:
@@ -596,10 +594,10 @@ agents:
 tools:
   - name: "mcp"
     extra:
-      server_url:           "http://localhost:3000"
-      server_name:          "github"
-      header_Authorization: "env:GITHUB_TOKEN"     # → Authorization: Bearer ghp_xxx
-      header_X-Api-Key:     "env:MY_API_KEY"        # → X-Api-Key: abc123
+      server_url: "http://localhost:3000"
+      server_name: "github"
+      header_Authorization: "env:GITHUB_TOKEN" # → Authorization: Bearer ghp_xxx
+      header_X-Api-Key: "env:MY_API_KEY" # → X-Api-Key: abc123
 ```
 
 **Name collisions** — if two servers expose a tool with the same name (e.g. both have `search`), the second is automatically prefixed with its `server_name`: `postgres.search`.
@@ -613,15 +611,15 @@ tools:
 Routex supervision is modelled after Erlang/OTP. Set per agent:
 
 ```yaml
-- id:      "researcher"
-  restart: "one_for_one"    # default
+- id: "researcher"
+  restart: "one_for_one" # default
 ```
 
-| Policy | When an agent fails... | Use when... |
-|---|---|---|
-| `one_for_one` | Restart only that agent | Agents are independent |
-| `one_for_all` | Restart the entire crew | Agents share state and a partial crew gives wrong results |
-| `rest_for_one` | Restart the failed agent and all agents that depend on it | Pipeline — downstream agents need fresh upstream output |
+| Policy         | When an agent fails...                                    | Use when...                                               |
+| -------------- | --------------------------------------------------------- | --------------------------------------------------------- |
+| `one_for_one`  | Restart only that agent                                   | Agents are independent                                    |
+| `one_for_all`  | Restart the entire crew                                   | Agents share state and a partial crew gives wrong results |
+| `rest_for_one` | Restart the failed agent and all agents that depend on it | Pipeline — downstream agents need fresh upstream output   |
 
 The restart budget is controlled at the runtime level:
 
@@ -643,7 +641,7 @@ Enable tracing and metrics in `agents.yaml`:
 ```yaml
 observability:
   tracing: true
-  jaeger_endpoint: "http://localhost:4318"   # OTLP HTTP — Jaeger v1.35+
+  jaeger_endpoint: "http://localhost:4318" # OTLP HTTP — Jaeger v1.35+
 
   metrics: true
   metrics_addr: ":9090"
@@ -778,12 +776,12 @@ result, _ := rt.StartAndRun(ctx)
 
 ```yaml
 tools:
-  - name: "db_query"    # no api_key or extra needed for custom tools
+  - name: "db_query" # no api_key or extra needed for custom tools
 
 agents:
-  - id:    "analyst"
-    role:  "researcher"
-    goal:  "Query the orders table for last week's top products"
+  - id: "analyst"
+    role: "researcher"
+    goal: "Query the orders table for last week's top products"
     tools: ["db_query"]
 ```
 
@@ -932,21 +930,21 @@ error: unknown flag: --timout
 
 ## Environment variables
 
-| Variable | Used by | Description |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | runtime, summarise | Anthropic API key |
-| `OPENAI_API_KEY` | openai provider, generate_image | OpenAI API key |
-| `BRAVE_API_KEY` | brave_search | Brave Search API key |
-| `SCRAPINGBEE_API_KEY` | scrape | ScrapingBee API key |
-| `DEEPL_API_KEY` | translate | DeepL API key (append `:fx` for free tier) |
-| `SENDGRID_API_KEY` | send_email | SendGrid API key |
-| `RESEND_API_KEY` | send_email | Resend API key |
-| `OPENWEATHER_API_KEY` | http_request | OpenWeatherMap key (passed via query param) |
-| `REDIS_URL` | memory | Redis connection URL |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | observe | OTLP trace endpoint |
-| `ROUTEX_METRICS_ADDR` | observe | Prometheus metrics address (default `:9090`) |
-| `ROUTEX_TASK` | config | Overrides `task.input` in YAML |
-| `ROUTEX_ENV_FILE` | config | Overrides `env_file:` in YAML (set by CLI `--env-file`) |
+| Variable                      | Used by                         | Description                                             |
+| ----------------------------- | ------------------------------- | ------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`           | runtime, summarise              | Anthropic API key                                       |
+| `OPENAI_API_KEY`              | openai provider, generate_image | OpenAI API key                                          |
+| `BRAVE_API_KEY`               | brave_search                    | Brave Search API key                                    |
+| `SCRAPINGBEE_API_KEY`         | scrape                          | ScrapingBee API key                                     |
+| `DEEPL_API_KEY`               | translate                       | DeepL API key (append `:fx` for free tier)              |
+| `SENDGRID_API_KEY`            | send_email                      | SendGrid API key                                        |
+| `RESEND_API_KEY`              | send_email                      | Resend API key                                          |
+| `OPENWEATHER_API_KEY`         | http_request                    | OpenWeatherMap key (passed via query param)             |
+| `REDIS_URL`                   | memory                          | Redis connection URL                                    |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | observe                         | OTLP trace endpoint                                     |
+| `ROUTEX_METRICS_ADDR`         | observe                         | Prometheus metrics address (default `:9090`)            |
+| `ROUTEX_TASK`                 | config                          | Overrides `task.input` in YAML                          |
+| `ROUTEX_ENV_FILE`             | config                          | Overrides `env_file:` in YAML (set by CLI `--env-file`) |
 
 **Development vs Production:**
 
@@ -954,7 +952,7 @@ Use `env_file: "."` in `agents.yaml` to load a `.env` file during development:
 
 ```yaml
 runtime:
-  env_file: "."    # DEVELOPMENT ONLY — remove in production
+  env_file: "." # DEVELOPMENT ONLY — remove in production
 ```
 
 In production, inject secrets through your platform instead:
@@ -1048,16 +1046,12 @@ routex/
 
 ---
 
-
 ## Contributing
-
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add tools, LLM providers, memory backends, and more.
 
 ---
 
-
 ## License
-
 
 MIT — see [LICENSE](LICENSE).

@@ -311,7 +311,7 @@ func TestRuntime_Integration_StartRunStop(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := rt.Start(ctx); err != nil {
+	if err = rt.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 

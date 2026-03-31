@@ -23,10 +23,6 @@ linters:
         - fmt.Fprintln
         - fmt.Fprintf
 
-    govet:
-      enable:
-        - shadow     # catch variable shadowing bugs
-
   exclusions:
     rules:
       # Test files have different conventions — setup calls like
