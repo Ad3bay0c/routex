@@ -18,6 +18,7 @@ research-crew
 # ── Output files ─────────────────────────────────────────────
 # Files that agents write during a run — not source code
 report.md
+research_report.md
 *.output
 
 # ── Go toolchain ─────────────────────────────────────────────
@@ -37,3 +38,4 @@ vendor/
 jaeger-data/
 prometheus-data/
 outputs
+/routex

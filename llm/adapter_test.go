@@ -2,7 +2,6 @@ package llm
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,11 +9,6 @@ import (
 
 	"github.com/Ad3bay0c/routex/memory"
 )
-
-func readAll(r io.ReadCloser) ([]byte, error) {
-	defer r.Close()
-	return io.ReadAll(r)
-}
 
 func mockServer(t *testing.T, status int, body any) *httptest.Server {
 	t.Helper()
