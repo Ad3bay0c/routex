@@ -1,0 +1,41 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet        # reports suspicious constructs
+    - errcheck     # checks unchecked errors
+    - staticcheck  # static analysis (includes gosimple checks in v2)
+    - ineffassign  # detects ineffectual assignments
+    - unused       # checks for unused code
+
+  disable:
+    - exhaustive   # too noisy for switch statements on external types
+
+  settings:
+    errcheck:
+      # fmt.Fprint* errors are never actionable in CLI output
+      # os.Setenv/Unsetenv/Chdir/Remove errors in tests are setup noise
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintln
+        - fmt.Fprintf
+
+    govet:
+      enable:
+        - shadow     # catch variable shadowing bugs
+
+  exclusions:
+    rules:
+      # Test files have different conventions — setup calls like
+      # os.WriteFile, os.MkdirAll, json.Decode are intentionally brief
+      - path: "_test\\.go"
+        linters:
+          - errcheck
+
+      # Examples are intentionally simple
+      - path: "examples/"
+        linters:
+          - errcheck
