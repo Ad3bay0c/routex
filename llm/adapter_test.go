@@ -69,6 +69,22 @@ func TestNew_ValidProviders(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("ollama", func(t *testing.T) {
+		srv := newOllamaTestServer(t, openAITextBody("ok"))
+		adapter, err := New(Config{
+			Provider: "ollama",
+			Model:    "llama3",
+			BaseURL:  srv.URL + "/v1",
+			Timeout:  5 * time.Second,
+		})
+		if err != nil {
+			t.Fatalf("New() error: %v", err)
+		}
+		if adapter.Provider() != "ollama" {
+			t.Errorf("Provider() = %q, want ollama", adapter.Provider())
+		}
+	})
 }
 
 func TestNew_UnknownProvider(t *testing.T) {
