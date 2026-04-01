@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Ad3bay0c/routex/memory"
 	"github.com/Ad3bay0c/routex/tools"
 )
 
@@ -143,6 +145,19 @@ func TestAnthropic_ErrorResponse(t *testing.T) {
 	}
 }
 
+func TestAnthropic_APIErrorObjectIn200Body(t *testing.T) {
+	srv := mockServer(t, http.StatusOK, map[string]any{
+		"error": map[string]any{"type": "rate_limit_error", "message": "too many requests"},
+	})
+	_, err := newTestAnthropic(t, srv).Complete(context.Background(), simpleRequest("hello"))
+	if err == nil {
+		t.Fatal("expected error from API error object")
+	}
+	if !strings.Contains(err.Error(), "anthropic") || !strings.Contains(err.Error(), "rate_limit") {
+		t.Errorf("error = %v", err)
+	}
+}
+
 func TestAnthropic_RequestHeaders(t *testing.T) {
 	var apiKey, version, contentType string
 	srv := mockServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
@@ -186,5 +201,54 @@ func TestAnthropic_ModelAndProvider(t *testing.T) {
 	}
 	if a.Provider() != "anthropic" {
 		t.Errorf("Provider() = %q, want anthropic", a.Provider())
+	}
+}
+
+func TestBuildAnthropicMessages_UserAssistantAndTools(t *testing.T) {
+	hist := []memory.Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", ToolCalls: []memory.ToolCallRecord{
+			{ID: "u1", ToolName: "web_search", Input: `{"q":"go"}`},
+		}},
+		{Role: "user", ToolCall: &memory.ToolCallRecord{ID: "u1", Output: "results"}},
+		{Role: "assistant", ToolCall: &memory.ToolCallRecord{ID: "u2", ToolName: "read", Input: `{}`}},
+		{Role: "user", ToolCall: &memory.ToolCallRecord{ID: "u2", Output: "x", Error: "e"}},
+		{Role: "assistant", Content: "bye"},
+	}
+	msgs := buildAnthropicMessages(hist)
+	if len(msgs) < 6 {
+		t.Fatalf("len = %d", len(msgs))
+	}
+	if msgs[0].Role != "user" || msgs[0].Content[0].Type != "text" {
+		t.Errorf("first: %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || len(msgs[1].Content) != 1 || msgs[1].Content[0].Type != "tool_use" {
+		t.Errorf("assistant batch: %+v", msgs[1])
+	}
+	if msgs[2].Role != "user" || msgs[2].Content[0].Type != "tool_result" {
+		t.Errorf("tool result: %+v", msgs[2])
+	}
+	if msgs[3].Role != "assistant" || msgs[3].Content[0].Type != "tool_use" {
+		t.Errorf("assistant single tool_use: %+v", msgs[3])
+	}
+	if msgs[4].Role != "user" || !msgs[4].Content[0].IsError {
+		t.Errorf("tool error flag: %+v", msgs[4].Content[0])
+	}
+	if msgs[5].Role != "assistant" || msgs[5].Content[0].Text != "bye" {
+		t.Errorf("final: %+v", msgs[5])
+	}
+}
+
+func TestBuildAnthropicTools_RequiredField(t *testing.T) {
+	out := buildAnthropicTools(map[string]tools.Schema{
+		"fn": {
+			Description: "fn",
+			Parameters: map[string]tools.Parameter{
+				"a": {Type: "string", Required: true},
+			},
+		},
+	})
+	if len(out) != 1 || len(out[0].InputSchema.Required) != 1 || out[0].InputSchema.Required[0] != "a" {
+		t.Fatalf("%+v", out)
 	}
 }
