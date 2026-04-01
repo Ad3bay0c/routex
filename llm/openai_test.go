@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Ad3bay0c/routex/memory"
 	"github.com/Ad3bay0c/routex/tools"
 )
 
@@ -253,5 +254,74 @@ func TestTranslateOpenAIResponse_NoChoices(t *testing.T) {
 	resp := translateOpenAIResponse(openAIResponse{})
 	if resp.FinishReason != "no_choices" {
 		t.Errorf("FinishReason = %q, want no_choices", resp.FinishReason)
+	}
+}
+
+func TestBuildOpenAIMessages_UserAssistantAndTools(t *testing.T) {
+	hist := []memory.Message{
+		{Role: "user", Content: "task"},
+		{Role: "assistant", ToolCalls: []memory.ToolCallRecord{
+			{ID: "c1", ToolName: "a", Input: `{"x":1}`},
+			{ID: "c2", ToolName: "b", Input: `{"y":2}`},
+		}},
+		{Role: "user", ToolCall: &memory.ToolCallRecord{ID: "c1", Output: `"out1"`}},
+		{Role: "assistant", ToolCall: &memory.ToolCallRecord{ID: "c3", ToolName: "grep", Input: `{}`}},
+		{Role: "user", ToolCall: &memory.ToolCallRecord{ID: "c3", Output: `"done"`, Error: "tool failed"}},
+		{Role: "assistant", Content: "final"},
+	}
+	msgs := buildOpenAIMessages("be helpful", hist)
+	if len(msgs) != 7 {
+		t.Fatalf("msgs len = %d, want 7: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "system" || msgs[0].Content != "be helpful" {
+		t.Errorf("system: %+v", msgs[0])
+	}
+	if msgs[1].Role != "user" || msgs[1].Content != "task" {
+		t.Errorf("user: %+v", msgs[1])
+	}
+	if msgs[2].Role != "assistant" || len(msgs[2].ToolCalls) != 2 {
+		t.Errorf("assistant multi: %+v", msgs[2])
+	}
+	if msgs[3].Role != "tool" || msgs[3].ToolCallID != "c1" {
+		t.Errorf("tool result: %+v", msgs[3])
+	}
+	if msgs[4].Role != "assistant" || len(msgs[4].ToolCalls) != 1 || msgs[4].ToolCalls[0].Function.Name != "grep" {
+		t.Errorf("assistant single tool: %+v", msgs[4])
+	}
+	if msgs[5].Role != "tool" || msgs[5].ToolCallID != "c3" {
+		t.Errorf("tool result 2: %+v", msgs[5])
+	}
+	if msgs[6].Role != "assistant" || msgs[6].Content != "final" {
+		t.Errorf("final assistant: %+v", msgs[6])
+	}
+}
+
+func TestBuildOpenAIMessages_EmptySystem(t *testing.T) {
+	msgs := buildOpenAIMessages("", []memory.Message{{Role: "user", Content: "hi"}})
+	if len(msgs) != 1 || msgs[0].Role != "user" {
+		t.Fatalf("%+v", msgs)
+	}
+}
+
+func TestBuildOpenAITools_RequiredField(t *testing.T) {
+	out := buildOpenAITools(map[string]tools.Schema{
+		"t": {
+			Description: "d",
+			Parameters: map[string]tools.Parameter{
+				"q": {Type: "string", Description: "query", Required: true},
+				"o": {Type: "string", Description: "opt", Required: false},
+			},
+		},
+	})
+	if len(out) != 1 {
+		t.Fatalf("len = %d", len(out))
+	}
+	var params map[string]any
+	if err := json.Unmarshal(out[0].Function.Parameters, &params); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := params["required"].([]any)
+	if len(req) != 1 || req[0] != "q" {
+		t.Errorf("required = %v", params["required"])
 	}
 }
