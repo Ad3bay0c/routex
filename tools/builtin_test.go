@@ -3,6 +3,8 @@ package tools
 import (
 	"errors"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +68,64 @@ func TestToolConfig_ResolveEnvValue(t *testing.T) {
 				t.Errorf("resolveEnvValue(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestListBuiltins_IncludesRegistered(t *testing.T) {
+	const name = "list_builtins_probe_xyz"
+	RegisterBuiltin(name, func(cfg ToolConfig) (Tool, error) {
+		return &mockTool{name: name}, nil
+	})
+	names := ListBuiltins()
+	if !slices.Contains(names, name) {
+		t.Errorf("ListBuiltins() missing %q in %v", name, names)
+	}
+}
+
+func TestErrToolNotBuiltin_ErrorString(t *testing.T) {
+	err := ErrToolNotBuiltin{Name: "my_tool"}
+	s := err.Error()
+	if !strings.Contains(s, "my_tool") || !strings.Contains(s, "built-in") || !strings.Contains(s, "RegisterTool") {
+		t.Errorf("Error() = %q", s)
+	}
+}
+
+func TestSchemaForBuiltin(t *testing.T) {
+	const okName = "schema_builtin_ok"
+	RegisterBuiltin(okName, func(cfg ToolConfig) (Tool, error) {
+		return &mockTool{
+			name: okName,
+			schema: Schema{
+				Description: "test schema",
+				Parameters: map[string]Parameter{
+					"x": {Type: "string", Description: "param", Required: true},
+				},
+			},
+		}, nil
+	})
+
+	s, ok := SchemaForBuiltin(okName)
+	if !ok {
+		t.Fatal("SchemaForBuiltin: want ok")
+	}
+	if s.Description != "test schema" {
+		t.Errorf("Description = %q", s.Description)
+	}
+	if s.Parameters["x"].Required != true {
+		t.Errorf("parameter x: %+v", s.Parameters["x"])
+	}
+
+	_, ok = SchemaForBuiltin("no_such_builtin_tool_ever")
+	if ok {
+		t.Error("unknown builtin should return !ok")
+	}
+
+	const failName = "schema_builtin_fail"
+	RegisterBuiltin(failName, func(cfg ToolConfig) (Tool, error) {
+		return nil, errors.New("no key")
+	})
+	_, ok = SchemaForBuiltin(failName)
+	if ok {
+		t.Error("factory error should return !ok")
 	}
 }
