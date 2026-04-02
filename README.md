@@ -1,4 +1,13 @@
-# Routex
+```
+  ██████╗  ██████╗ ██╗   ██╗████████╗███████╗██╗  ██╗
+  ██╔══██╗██╔═══██╗██║   ██║╚══██╔══╝██╔════╝╚██╗██╔╝
+  ██████╔╝██║   ██║██║   ██║   ██║   █████╗   ╚███╔╝
+  ██╔══██╗██║   ██║██║   ██║   ██║   ██╔══╝   ██╔██╗
+  ██║  ██║╚██████╔╝╚██████╔╝   ██║   ███████╗██╔╝ ██╗
+  ╚═╝  ╚═╝ ╚═════╝  ╚═════╝    ╚═╝   ╚══════╝╚═╝  ╚═╝
+
+  lightweight AI agent runtime for Go
+```
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/Ad3bay0c/routex.svg)](https://pkg.go.dev/github.com/Ad3bay0c/routex)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Ad3bay0c/routex)](https://goreportcard.com/report/github.com/Ad3bay0c/routex)
