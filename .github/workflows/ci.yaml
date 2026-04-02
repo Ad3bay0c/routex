@@ -3,8 +3,14 @@ name: CI
 on:
   push:
     branches: ["main"]
+    paths-ignore:
+      - ".github/CODEOWNERS"
+      - "LICENSE"
   pull_request:
     branches: ["main"]
+    paths-ignore:
+      - ".github/CODEOWNERS"
+      - "LICENSE"
 
 jobs:
   test:
