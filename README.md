@@ -2,6 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/Ad3bay0c/routex.svg)](https://pkg.go.dev/github.com/Ad3bay0c/routex)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Ad3bay0c/routex)](https://goreportcard.com/report/github.com/Ad3bay0c/routex)
+[![codecov](https://codecov.io/github/Ad3bay0c/routex/graph/badge.svg?token=G9LZCMA2EC)](https://codecov.io/github/Ad3bay0c/routex)
 [![GitHub stars](https://img.shields.io/github/stars/Ad3bay0c/routex?style=social)](https://github.com/Ad3bay0c/routex/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -104,6 +105,8 @@ cd my-research-crew
 # Set up environment
 cp .env.example .env
 # Edit .env — add your ANTHROPIC_API_KEY
+
+# Edit the generated agents.yaml file
 
 # Validate the config
 routex validate agents.yaml
