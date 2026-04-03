@@ -72,6 +72,7 @@ Routex is built for Go developers who want agentic capabilities without leaving 
 - [Observability](#observability)
 - [Writing a custom tool](#writing-a-custom-tool)
 - [CLI reference](#cli-reference)
+- [GitHub Actions](#github-actions)
 - [Environment variables](#environment-variables)
 - [Repo layout](#repo-layout)
 - [Roadmap](#roadmap)
@@ -939,6 +940,74 @@ error: unknown flag: --timout
 
         Did you mean  --timeout  ?
 ```
+
+---
+
+## GitHub Actions
+
+You can run Routex in CI the same way you run it locally: check out the repo (with `agents.yaml`), install the CLI, set API keys as **secrets**, then invoke `routex run`. The repository ships a **composite action** that runs `go install` and `routex run` with the same flags as the CLI.
+
+**Requirements:** use a **Linux** runner (`ubuntu-latest` is typical). Set **encrypted secrets** on the repository or organization for any keys your crew needs (for example `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). Do not put secrets in `with:` inputs. **Fork PRs** usually cannot access upstream secrets, so avoid running full agent jobs on untrusted PRs unless you have a deliberate, reviewed policy.
+
+### Option A — composite action (`uses: …/routex@v…`)
+
+Pin the action to a **release tag** so `go install` uses the same version as the action (when `routex_ref` is left empty, install uses `github.action_ref`).
+
+```yaml
+name: Routex crew
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Ad3bay0c/routex@main # pin a semver tag (e.g. v1.0.0) for reproducible installs
+        with:
+          config: agents.yaml
+          task: Summarise the README in three bullet points.
+          output: report.md
+          timeout: 15m
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: routex-output
+          path: report.md
+```
+
+Inputs map to CLI flags: `config` (required), optional `task`, `env_file`, `output`, `timeout`, `log_level`, `working_directory`, `go_version`, `json_output`, `dry_run`, and optional `routex_ref` to override the install revision.
+
+### Option B — `go install` without the composite action
+
+```yaml
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Install routex
+        run: go install github.com/Ad3bay0c/routex/cmd/routex@latest
+
+      - name: Run
+        run: |
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          routex run agents.yaml -t "Your task" -o report.md
+```
+
+### Safety and cost
+
+Keep **timeouts** and YAML `max_duration` reasonable; use **`dry_run: true`** (composite) or `--dry-run` in CI when you only need validation. Restrict **tools** and tokens in configs that run in CI (least privilege). LLM calls are **paid** per run—treat workflows like any other production job hitting external APIs.
 
 ---
 
