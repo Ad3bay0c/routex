@@ -163,16 +163,18 @@ Then import the root package and any subpackages you need (see below). If you ad
 Routex's built-in tools are in separate sub-packages so you only compile what you use. Import `tools/all` for everything, or pick individual packages for a leaner binary:
 
 ```go
-// All 11 built-in tools (convenience — larger binary)
+// All 13 built-in tools (convenience — larger binary)
 import _ "github.com/Ad3bay0c/routex/tools/all"
 
 // Or import only what you need (smaller binary, fewer dependencies)
 import (
-    _ "github.com/Ad3bay0c/routex/tools/file"   // read_file, write_file
-    _ "github.com/Ad3bay0c/routex/tools/search" // web_search, brave_search, wikipedia
-    _ "github.com/Ad3bay0c/routex/tools/web"    // http_request, read_url, scrape
-    // omit tools/ai   → no OpenAI/Anthropic SDK dependency
-    // omit tools/comms → no SendGrid/Resend dependency
+    _ "github.com/Ad3bay0c/routex/tools/file"    // read_file, write_file
+    _ "github.com/Ad3bay0c/routex/tools/search"  // web_search, brave_search, wikipedia
+    _ "github.com/Ad3bay0c/routex/tools/web"     // http_request, read_url, scrape
+    _ "github.com/Ad3bay0c/routex/tools/storage" // read_s3, write_s3 (pulls in AWS SDK)
+    // omit tools/ai      → no OpenAI/Anthropic SDK dependency
+    // omit tools/comms   → no SendGrid/Resend dependency
+    // omit tools/storage → no AWS SDK dependency
 )
 ```
 
@@ -337,6 +339,16 @@ tools:
       from_email: "agent@example.com"
       from_name: "Routex Agent"
 
+  - name: "write_s3" # Write objects to S3
+    extra:
+      bucket: "my-bucket"
+      region: "env:AWS_REGION" # optional
+
+  - name: "read_s3" # Read objects from S3
+    extra:
+      bucket: "my-bucket"
+      region: "env:AWS_REGION" # optional
+
   - name: "mcp" # MCP server call
     extra:
       server_url: "http://localhost:3000"
@@ -457,6 +469,46 @@ extra:
 | `read_file`  | `base_dir` | Read files — sandboxed to `base_dir`  |
 
 Path traversal (`../`) is blocked in both tools. Agents can only read or write inside the configured `base_dir`.
+
+### Storage (S3)
+
+| Tool        | Config                     | Description                          |
+| ----------- | -------------------------- | ------------------------------------ |
+| `write_s3`  | `extra.bucket`, `extra.region` | Write objects to a pre-configured S3 bucket |
+| `read_s3`   | `extra.bucket`, `extra.region` | Read objects from a pre-configured S3 bucket |
+
+The bucket is fixed at registration time — agents only control the key (object path within the bucket). Credentials come from the AWS default credential chain: `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` env vars, `~/.aws/credentials`, or an IAM instance profile — no keys in YAML needed.
+
+**YAML:**
+
+```yaml
+tools:
+  - name: "write_s3"
+    extra:
+      bucket: "my-bucket"
+      region: "env:AWS_REGION"   # optional — falls back to AWS_DEFAULT_REGION / SDK default
+
+  - name: "read_s3"
+    extra:
+      bucket: "my-bucket"
+      region: "env:AWS_REGION"
+```
+
+**Programmatic (inject your own client):**
+
+```go
+import (
+    "github.com/aws/aws-sdk-go-v2/config"
+    "github.com/aws/aws-sdk-go-v2/service/s3"
+    "github.com/Ad3bay0c/routex/tools/storage"
+)
+
+awsCfg, _ := config.LoadDefaultConfig(ctx, config.WithRegion("us-east-1"))
+s3Client  := s3.NewFromConfig(awsCfg)
+
+rt.RegisterTool(storage.WriteS3("my-bucket", s3Client))
+rt.RegisterTool(storage.ReadS3("my-bucket", s3Client))
+```
 
 ### AI & Generation
 
@@ -875,7 +927,7 @@ Flags:
   --json   Machine-readable output
 
 Example output:
-  Built-in tools (11)
+  Built-in tools (13)
 
   NAME                       DESCRIPTION
   ─────────────────────────  ─────────────────────────────────────────────
@@ -883,6 +935,7 @@ Example output:
   generate_image             Generate an image from a text description usin...
   http_request               Make an HTTP request to any REST API endpoint...
   read_file                  Read the content of a local file...
+  read_s3                    Read the content of an object from S3...
   read_url                   Fetch and strip HTML from any URL...
   scrape                     Fetch JS-rendered page content via ScrapingBee...
   send_email                 Send an email via SendGrid or Resend...
@@ -891,6 +944,7 @@ Example output:
   web_search                 Search the web via DuckDuckGo (free, no key)...
   wikipedia                  Fetch a Wikipedia article summary...
   write_file                 Write content to a file safely...
+  write_s3                   Write text content to an object in S3...
 ```
 
 ### `routex init`
@@ -943,21 +997,24 @@ error: unknown flag: --timout
 
 ## Environment variables
 
-| Variable                      | Used by                         | Description                                             |
-| ----------------------------- | ------------------------------- | ------------------------------------------------------- |
-| `ANTHROPIC_API_KEY`           | runtime, summarise              | Anthropic API key                                       |
-| `OPENAI_API_KEY`              | openai provider, generate_image | OpenAI API key                                          |
-| `BRAVE_API_KEY`               | brave_search                    | Brave Search API key                                    |
-| `SCRAPINGBEE_API_KEY`         | scrape                          | ScrapingBee API key                                     |
-| `DEEPL_API_KEY`               | translate                       | DeepL API key (append `:fx` for free tier)              |
-| `SENDGRID_API_KEY`            | send_email                      | SendGrid API key                                        |
-| `RESEND_API_KEY`              | send_email                      | Resend API key                                          |
-| `OPENWEATHER_API_KEY`         | http_request                    | OpenWeatherMap key (passed via query param)             |
-| `REDIS_URL`                   | memory                          | Redis connection URL                                    |
+| Variable                     | Used by                         | Description                                             |
+|------------------------------| ------------------------------- | ------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`          | runtime, summarise              | Anthropic API key                                       |
+| `OPENAI_API_KEY`             | openai provider, generate_image | OpenAI API key                                          |
+| `BRAVE_API_KEY`              | brave_search                    | Brave Search API key                                    |
+| `SCRAPINGBEE_API_KEY`        | scrape                          | ScrapingBee API key                                     |
+| `DEEPL_API_KEY`              | translate                       | DeepL API key (append `:fx` for free tier)              |
+| `SENDGRID_API_KEY`           | send_email                      | SendGrid API key                                        |
+| `RESEND_API_KEY`             | send_email                      | Resend API key                                          |
+| `AWS_ACCESS_KEY_ID`          | read_s3, write_s3               | Optional — one way to provide AWS credentials; instance profile, IAM role, SSO, and `~/.aws/credentials` also work |
+| `AWS_SECRET_ACCESS_KEY`      | read_s3, write_s3               | Optional — required only when using key-based auth      |
+| `AWS_REGION`                 | read_s3, write_s3               | Optional — can also be set in `~/.aws/config` or via `extra.region` in YAML |
+| `OPENWEATHER_API_KEY`        | http_request                    | OpenWeatherMap key (passed via query param)             |
+| `REDIS_URL`                  | memory                          | Redis connection URL                                    |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | observe                         | OTLP trace endpoint                                     |
-| `ROUTEX_METRICS_ADDR`         | observe                         | Prometheus metrics address (default `:9090`)            |
-| `ROUTEX_TASK`                 | config                          | Overrides `task.input` in YAML                          |
-| `ROUTEX_ENV_FILE`             | config                          | Overrides `env_file:` in YAML (set by CLI `--env-file`) |
+| `ROUTEX_METRICS_ADDR`        | observe                         | Prometheus metrics address (default `:9090`)            |
+| `ROUTEX_TASK`                | config                          | Overrides `task.input` in YAML                          |
+| `ROUTEX_ENV_FILE`            | config                          | Overrides `env_file:` in YAML (set by CLI `--env-file`) |
 
 **Development vs Production:**
 
@@ -1021,6 +1078,9 @@ routex/
 │   ├── file/
 │   │   ├── write_file.go       # Sandboxed file writer
 │   │   └── read_file.go        # Sandboxed file reader
+│   ├── storage/
+│   │   ├── write_s3.go         # S3 object writer (bucket fixed at registration)
+│   │   └── read_s3.go          # S3 object reader (bucket fixed at registration)
 │   ├── ai/
 │   │   ├── summarise.go        # LLM text compression
 │   │   ├── translate.go        # DeepL translation
