@@ -1,0 +1,86 @@
+name: Run Routex
+description: Install the routex CLI (go install) and run a crew from agents.yaml
+branding:
+  icon: terminal
+  color: gray-dark
+
+inputs:
+  config:
+    description: Path to agents.yaml (relative to working_directory)
+    required: true
+  task:
+    description: Override task text (-t / ROUTEX_TASK)
+    required: false
+    default: ""
+  env_file:
+    description: Optional .env path (-e)
+    required: false
+    default: ""
+  output:
+    description: Optional output file path (-o)
+    required: false
+    default: ""
+  timeout:
+    description: Optional max duration (-T), e.g. 10m or 30s
+    required: false
+    default: ""
+  log_level:
+    description: "Optional log level (-l): debug | info | warn | error"
+    required: false
+    default: ""
+  working_directory:
+    description: Directory to run in
+    required: false
+    default: "."
+  go_version:
+    description: Go version for actions/setup-go (must support the module)
+    required: false
+    default: "1.25"
+  routex_ref:
+    description: Version for go install (tag, branch, or commit). Empty uses github.action_ref when the action is pinned; otherwise main.
+    required: false
+    default: ""
+  json_output:
+    description: If true, pass --json
+    required: false
+    default: "false"
+  dry_run:
+    description: If true, pass --dry-run
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go_version }}
+
+    - name: Install routex
+      shell: bash
+      run: |
+        set -euo pipefail
+        REF="${{ inputs.routex_ref }}"
+        if [ -z "$REF" ]; then
+          REF="${{ github.action_ref }}"
+        fi
+        if [ -z "$REF" ]; then
+          REF="main"
+        fi
+        go install "github.com/Ad3bay0c/routex/cmd/routex@${REF}"
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+    - name: Run routex
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        set -euo pipefail
+        ARGS=(run "${{ inputs.config }}")
+        if [ -n "${{ inputs.task }}" ]; then ARGS+=(-t "${{ inputs.task }}"); fi
+        if [ -n "${{ inputs.env_file }}" ]; then ARGS+=(-e "${{ inputs.env_file }}"); fi
+        if [ -n "${{ inputs.output }}" ]; then ARGS+=(-o "${{ inputs.output }}"); fi
+        if [ -n "${{ inputs.timeout }}" ]; then ARGS+=(-T "${{ inputs.timeout }}"); fi
+        if [ -n "${{ inputs.log_level }}" ]; then ARGS+=(-l "${{ inputs.log_level }}"); fi
+        if [ "${{ inputs.json_output }}" = "true" ]; then ARGS+=(--json); fi
+        if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS+=(--dry-run); fi
+        routex "${ARGS[@]}"
