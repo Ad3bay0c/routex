@@ -1069,3 +1069,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add tools, LLM providers, memo
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Blog
+
+- [I Built a Multi-Agent AI Runtime in Go Because Python Wasn't an Option](https://dev.to/clinnet/i-built-a-multi-agent-ai-runtime-in-go-because-python-wasnt-an-option-2ioi)
