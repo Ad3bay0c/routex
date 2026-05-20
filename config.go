@@ -268,7 +268,7 @@ func buildConfig(raw yamlFile) (Config, error) {
 	// ── LLM section ───────────────────────────────────────────────
 	cfg.LLM.Provider = env(raw.Runtime.LLMProvider)
 	if cfg.LLM.Provider == "" {
-		return cfg, fmt.Errorf("runtime.llm_provider is required — valid values: anthropic, openai, ollama")
+		return cfg, fmt.Errorf("runtime.llm_provider is required — valid values: anthropic, openai, ollama, gemini")
 	}
 
 	cfg.LLM.Model = env(raw.Runtime.Model)

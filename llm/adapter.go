@@ -11,7 +11,7 @@ import (
 
 // Adapter is the contract every LLM provider must satisfy.
 //
-// Routex supports multiple LLM providers — Anthropic, OpenAI, Ollama.
+// Routex supports multiple LLM providers — Anthropic, OpenAI, Ollama, Gemini.
 // Each one has a different API, different authentication, different
 // request and response shapes. This interface hides all of that.
 //
@@ -23,6 +23,7 @@ import (
 //   - AnthropicAdapter  (llm/anthropic.go)
 //   - OpenAIAdapter     (llm/openai.go)
 //   - OllamaAdapter     (llm/ollama.go)
+//   - GeminiAdapter     (llm/gemini.go)
 type Adapter interface {
 	// Complete sends a conversation history to the LLM and returns its response.
 	// This is the core method — everything else in an agent's loop calls this.
@@ -45,7 +46,7 @@ type Adapter interface {
 	Model() string
 
 	// Provider returns the provider name.
-	// Example: "anthropic", "openai", "ollama"
+	// Example: "anthropic", "openai", "ollama", "gemini"
 	Provider() string
 }
 
@@ -143,7 +144,7 @@ func (u TokenUsage) Total() int {
 // Passed to New() to build the right adapter for the configured provider.
 type Config struct {
 	// Provider selects which LLM backend to use.
-	// Valid values: "anthropic", "openai", "ollama"
+	// Valid values: "anthropic", "openai", "ollama", "gemini"
 	Provider string
 
 	// Model is the model identifier for the chosen provider.
@@ -193,9 +194,11 @@ func New(cfg Config) (Adapter, error) {
 		return NewOpenAIAdapter(cfg)
 	case "ollama":
 		return NewOllamaAdapter(cfg)
+	case "gemini":
+		return NewGeminiAdapter(cfg)
 	default:
 		return nil, fmt.Errorf(
-			"unknown llm provider %q — valid options are: anthropic, openai, ollama",
+			"unknown llm provider %q — valid options are: anthropic, openai, ollama, gemini",
 			cfg.Provider,
 		)
 	}
