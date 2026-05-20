@@ -504,7 +504,7 @@ func New(cfg Config) (Adapter, error) {
         return NewMyProviderAdapter(cfg)
     default:
         return nil, fmt.Errorf(
-            "unknown llm provider %q — valid options are: anthropic, openai, ollama, myprovider",
+            "unknown llm provider %q — valid options are: anthropic, openai, ollama, gemini, myprovider",
             cfg.Provider,
         )
     }
