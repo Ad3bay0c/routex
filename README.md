@@ -278,7 +278,7 @@ result, _ := rt.StartAndRun(ctx)
 ```yaml
 runtime:
   name: "my-crew" # identifies this crew in logs and traces
-  llm_provider: "anthropic" # anthropic | openai | ollama
+  llm_provider: "anthropic" # anthropic | openai | ollama | gemini
   model: "claude-sonnet-4-6" # model name for the chosen provider
   api_key: "env:ANTHROPIC_API_KEY" # env:VAR reads from environment
   log_level: "info" # debug | info | warn | error
@@ -492,7 +492,7 @@ Set the provider at the runtime level — all agents inherit it by default:
 
 ```yaml
 runtime:
-  llm_provider: "anthropic" # or "openai" or "ollama"
+  llm_provider: "anthropic" # or "openai", "ollama", or "gemini"
   model: "claude-sonnet-4-6"
   api_key: "env:ANTHROPIC_API_KEY"
 ```
@@ -502,8 +502,18 @@ runtime:
 | `anthropic` | `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`, `claude-opus-4-6` | Default                                |
 | `openai`    | `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini`                            | Also works with OpenAI-compatible APIs |
 | `ollama`    | `llama3`, `mistral`, `phi3`, any installed model                    | Local inference, no API key needed     |
+| `gemini`    | `gemini-2.0-flash`, `gemini-2.5-pro`, `gemini-2.5-flash`            | Google Gemini API; `GEMINI_API_KEY`    |
 
 Switch providers by changing two lines in YAML — zero code changes.
+
+**Gemini example:**
+
+```yaml
+runtime:
+  llm_provider: "gemini"
+  model: "gemini-2.0-flash"
+  api_key: "env:GEMINI_API_KEY"
+```
 
 ---
 
@@ -1017,6 +1027,7 @@ Keep **timeouts** and YAML `max_duration` reasonable; use **`dry_run: true`** (c
 | ----------------------------- | ------------------------------- | ------------------------------------------------------- |
 | `ANTHROPIC_API_KEY`           | runtime, summarise              | Anthropic API key                                       |
 | `OPENAI_API_KEY`              | openai provider, generate_image | OpenAI API key                                          |
+| `GEMINI_API_KEY`              | gemini provider                 | Google Gemini API key ([AI Studio](https://aistudio.google.com/apikey)) |
 | `BRAVE_API_KEY`               | brave_search                    | Brave Search API key                                    |
 | `SCRAPINGBEE_API_KEY`         | scrape                          | ScrapingBee API key                                     |
 | `DEEPL_API_KEY`               | translate                       | DeepL API key (append `:fx` for free tier)              |
@@ -1070,7 +1081,8 @@ routex/
 │   ├── adapter.go              # Adapter interface, Request, Response, Config
 │   ├── anthropic.go            # Anthropic provider (claude-*)
 │   ├── openai.go               # OpenAI provider + compatible APIs
-│   └── ollama.go               # Local Ollama provider
+│   ├── ollama.go               # Local Ollama provider
+│   └── gemini.go               # Google Gemini provider
 │
 ├── memory/
 │   ├── store.go                # MemoryStore interface
