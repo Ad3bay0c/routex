@@ -350,7 +350,7 @@ func translateGeminiResponse(apiResp geminiResponse) Response {
 		}
 		if part.FunctionCall != nil {
 			input := string(part.FunctionCall.Args)
-			if input == "" {
+			if input == "" || input == "null" {
 				input = "{}"
 			}
 			id := part.FunctionCall.ID

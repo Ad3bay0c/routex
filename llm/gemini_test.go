@@ -3,12 +3,14 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Ad3bay0c/routex/memory"
 	"github.com/Ad3bay0c/routex/tools"
 )
 
@@ -240,5 +242,198 @@ func TestNew_GeminiProvider(t *testing.T) {
 	}
 	if adapter.Provider() != "gemini" {
 		t.Errorf("Provider() = %q, want gemini", adapter.Provider())
+	}
+}
+
+func TestGemini_CustomAPIRootBuildsEndpoint(t *testing.T) {
+	a, err := NewGeminiAdapter(Config{
+		APIKey:  "k",
+		Model:   "gemini-2.0-flash",
+		BaseURL: "https://custom.example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://custom.example.com/v1beta/models/gemini-2.0-flash:generateContent"
+	if a.endpoint != want {
+		t.Errorf("endpoint = %q, want %q", a.endpoint, want)
+	}
+}
+
+func TestGemini_HTTPErrorStatus(t *testing.T) {
+	srv := mockServer(t, http.StatusBadRequest, map[string]any{"message": "bad request"})
+	_, err := newTestGemini(t, srv).Complete(context.Background(), simpleRequest("hello"))
+	if err == nil {
+		t.Fatal("expected HTTP error")
+	}
+	if !strings.Contains(err.Error(), "HTTP 400") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestGemini_InvalidJSONResponse(t *testing.T) {
+	srv := mockServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "not-json")
+	})
+	_, err := newTestGemini(t, srv).Complete(context.Background(), simpleRequest("hello"))
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestGemini_NoCandidates(t *testing.T) {
+	srv := mockServer(t, http.StatusOK, map[string]any{
+		"candidates":    []any{},
+		"usageMetadata": map[string]any{},
+	})
+	resp, err := newTestGemini(t, srv).Complete(context.Background(), simpleRequest("hello"))
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp.FinishReason != "no_candidates" {
+		t.Errorf("FinishReason = %q, want no_candidates", resp.FinishReason)
+	}
+}
+
+func TestGemini_ToolCallEmptyArgs(t *testing.T) {
+	srv := mockServer(t, http.StatusOK, geminiToolCallBody([]map[string]any{
+		geminiFunctionCall("id1", "noop", nil),
+	}))
+	resp, err := newTestGemini(t, srv).Complete(context.Background(), simpleRequest("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ToolCalls[0].Input != "{}" {
+		t.Errorf("Input = %q, want {}", resp.ToolCalls[0].Input)
+	}
+}
+
+func TestGeminiError_ErrorString(t *testing.T) {
+	err := (&geminiError{Status: "INVALID", Message: "bad"}).Error()
+	if !strings.Contains(err, "gemini") || !strings.Contains(err, "INVALID") {
+		t.Errorf("Error() = %q", err)
+	}
+}
+
+func TestBuildGeminiContents_UserAssistantAndTools(t *testing.T) {
+	hist := []memory.Message{
+		{Role: "user", Content: "task"},
+		{Role: "assistant", ToolCalls: []memory.ToolCallRecord{
+			{ID: "c1", ToolName: "a", Input: `{"x":1}`},
+			{ID: "c2", ToolName: "b", Input: `{"y":2}`},
+		}},
+		{Role: "user", ToolCall: &memory.ToolCallRecord{ID: "c1", ToolName: "a", Output: `{"ok":true}`}},
+		{Role: "assistant", ToolCall: &memory.ToolCallRecord{ID: "c3", ToolName: "grep", Input: `{}`}},
+		{Role: "user", ToolCall: &memory.ToolCallRecord{ID: "c3", ToolName: "grep", Output: "fail", Error: "tool failed"}},
+		{Role: "assistant", Content: "final"},
+	}
+	contents := buildGeminiContents(hist)
+	if len(contents) != 6 {
+		t.Fatalf("len = %d, want 6: %+v", len(contents), contents)
+	}
+	if contents[0].Role != "user" || contents[0].Parts[0].Text != "task" {
+		t.Errorf("user text: %+v", contents[0])
+	}
+	if contents[1].Role != "model" || len(contents[1].Parts) != 2 {
+		t.Errorf("model multi tool: %+v", contents[1])
+	}
+	if contents[1].Parts[0].FunctionCall == nil || contents[1].Parts[0].FunctionCall.ID != "c1" {
+		t.Errorf("first call: %+v", contents[1].Parts[0])
+	}
+	if contents[2].Parts[0].FunctionResponse == nil || contents[2].Parts[0].FunctionResponse.Name != "a" {
+		t.Errorf("tool result ok: %+v", contents[2].Parts[0])
+	}
+	if _, ok := contents[2].Parts[0].FunctionResponse.Response["ok"]; !ok {
+		t.Errorf("parsed JSON response: %+v", contents[2].Parts[0].FunctionResponse.Response)
+	}
+	if contents[3].Parts[0].FunctionCall.Name != "grep" {
+		t.Errorf("single tool call: %+v", contents[3])
+	}
+	if contents[4].Parts[0].FunctionResponse.Response["error"] != "tool failed" {
+		t.Errorf("tool error: %+v", contents[4].Parts[0].FunctionResponse.Response)
+	}
+	if contents[5].Parts[0].Text != "final" {
+		t.Errorf("final: %+v", contents[5])
+	}
+}
+
+func TestToolCallToGeminiFuncCall_EmptyInput(t *testing.T) {
+	call := toolCallToGeminiFuncCall("", "fn", "")
+	if string(call.Args) != "{}" || call.ID != "" || call.Name != "fn" {
+		t.Errorf("call = %+v", call)
+	}
+}
+
+func TestToolResultToGeminiResponse_PlainAndError(t *testing.T) {
+	plain := toolResultToGeminiResponse("hello", "")
+	if plain["result"] != "hello" {
+		t.Errorf("plain = %v", plain)
+	}
+	errResp := toolResultToGeminiResponse("out", "boom")
+	if errResp["error"] != "boom" || errResp["output"] != "out" {
+		t.Errorf("errResp = %v", errResp)
+	}
+}
+
+func TestBuildGeminiTools_RequiredField(t *testing.T) {
+	out := buildGeminiTools(map[string]tools.Schema{
+		"t": {
+			Description: "tool",
+			Parameters: map[string]tools.Parameter{
+				"q": {Type: "string", Required: true},
+				"o": {Type: "string", Required: false},
+			},
+		},
+	})
+	if len(out) != 1 || len(out[0].FunctionDeclarations) != 1 {
+		t.Fatalf("out = %+v", out)
+	}
+	req, _ := out[0].FunctionDeclarations[0].Parameters["required"].([]string)
+	if len(req) != 1 || req[0] != "q" {
+		t.Errorf("required = %v", out[0].FunctionDeclarations[0].Parameters["required"])
+	}
+}
+
+func TestBuildGeminiTools_Empty(t *testing.T) {
+	if buildGeminiTools(nil) != nil {
+		t.Fatal("expected nil for empty schemas")
+	}
+}
+
+func TestTranslateGeminiResponse_TextAndTools(t *testing.T) {
+	resp := translateGeminiResponse(geminiResponse{
+		Candidates: []struct {
+			Content struct {
+				Parts []geminiPart `json:"parts"`
+				Role  string       `json:"role"`
+			} `json:"content"`
+			FinishReason string `json:"finishReason"`
+		}{{
+			FinishReason: "STOP",
+			Content: struct {
+				Parts []geminiPart `json:"parts"`
+				Role  string       `json:"role"`
+			}{
+				Parts: []geminiPart{
+					{Text: "hi"},
+					{FunctionCall: &geminiFuncCall{Name: "t", Args: json.RawMessage(`{"k":1}`)}},
+				},
+			},
+		}},
+		UsageMetadata: struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+		}{PromptTokenCount: 5, CandidatesTokenCount: 3},
+	})
+	if resp.Content != "hi" || len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Input != `{"k":1}` {
+		t.Errorf("resp = %+v", resp)
+	}
+	if resp.Usage.Total() != 8 {
+		t.Errorf("usage = %d", resp.Usage.Total())
 	}
 }
