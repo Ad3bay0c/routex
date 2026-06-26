@@ -97,6 +97,8 @@ type GeminiAdapter struct {
 	temperature float64
 	timeout     time.Duration
 	http        *http.Client
+
+	retryConfig RetryConfig
 }
 
 // NewGeminiAdapter creates a Gemini adapter from a Config.
@@ -132,6 +134,11 @@ func NewGeminiAdapter(cfg Config) (*GeminiAdapter, error) {
 		timeout = 120 * time.Second
 	}
 
+	maxRetries := cfg.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+
 	return &GeminiAdapter{
 		apiKey:      cfg.APIKey,
 		endpoint:    endpoint,
@@ -140,6 +147,12 @@ func NewGeminiAdapter(cfg Config) (*GeminiAdapter, error) {
 		temperature: temperature,
 		timeout:     timeout,
 		http:        &http.Client{Timeout: timeout},
+
+		retryConfig: RetryConfig{
+			MaxRetries: maxRetries,
+			BaseDelay:  time.Second,
+			MaxDelay:   30 * time.Second,
+		},
 	}, nil
 }
 
@@ -148,6 +161,22 @@ func (a *GeminiAdapter) Provider() string { return "gemini" }
 
 // Complete sends a conversation to Gemini and returns the response.
 func (a *GeminiAdapter) Complete(ctx context.Context, req Request) (Response, error) {
+	var response Response
+
+	err := withRetry(ctx, a.retryConfig, func() error {
+		resp, err := a.doComplete(ctx, req)
+		if err != nil {
+			return err
+		}
+		response = resp
+		return nil
+	})
+
+	return response, err
+}
+
+// doComplete performs the actual HTTP call — called by withRetry.
+func (a *GeminiAdapter) doComplete(ctx context.Context, req Request) (Response, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
