@@ -104,7 +104,7 @@ func startSupervisorAndScheduler(t *testing.T, agentList []*agents.Agent) (*Sche
 		defer drainWG.Done()
 		drainAgentNotify(stopDrain, agentList)
 	}()
-	sch := New(agentList, sup, logger)
+	sch := New(agentList, sup, 0, logger)
 	t.Cleanup(func() {
 		close(stopDrain)
 		drainWG.Wait()
@@ -306,7 +306,7 @@ func TestScheduler_Run_ContextCancelled(t *testing.T) {
 		defer drainWG.Done()
 		drainAgentNotify(stopDrain, []*agents.Agent{ag})
 	}()
-	sch := New([]*agents.Agent{ag}, sup, logger)
+	sch := New([]*agents.Agent{ag}, sup, 0, logger)
 	t.Cleanup(func() {
 		close(stopDrain)
 		drainWG.Wait()

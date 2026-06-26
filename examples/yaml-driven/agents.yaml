@@ -19,13 +19,15 @@ runtime:
   model:        "claude-sonnet-4-6"
   api_key:      "env:ANTHROPIC_API_KEY"
   log_level:    "info"
+  max_concurrent_agents: 5
+
+  # Retry failed LLM calls with exponential backoff
+  # Applies to 429 rate limits and 5xx server errors
+  max_llm_retries: 3
 
   # env_file — DEVELOPMENT ONLY
   # Loads a .env file so you don't need to export variables in your terminal.
-  # Remove this line in production — use your platform's secret management instead:
-  #   Docker / K8s: inject env vars via deployment config or secrets
-  #   Fly.io:       fly secrets set ANTHROPIC_API_KEY=...
-  #   Railway:      dashboard > environment variables
+  # Remove this line in production — use your platform's secret management instead
   env_file: "."
 
 # ── Task ─────────────────────────────────────────────────────────

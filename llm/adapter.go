@@ -173,6 +173,8 @@ type Config struct {
 	// Timeout is how long to wait for a single LLM call before giving up.
 	// Zero means no timeout — not recommended in production.
 	Timeout time.Duration
+
+	MaxRetries int
 }
 
 // New creates the right LLM adapter for the given config.
