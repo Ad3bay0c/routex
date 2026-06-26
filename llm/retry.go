@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"strconv"
 	"time"
 )
 
@@ -135,16 +134,4 @@ func calculateDelay(cfg RetryConfig, attempt int, err error) time.Duration {
 	}
 
 	return time.Duration(backoff)
-}
-
-// parseRetryAfter parses the Retry-After HTTP header.
-func parseRetryAfter(header string) time.Duration {
-	if header == "" {
-		return 0
-	}
-	seconds, err := strconv.ParseFloat(header, 64)
-	if err != nil {
-		return 0
-	}
-	return time.Duration(seconds * float64(time.Second))
 }
