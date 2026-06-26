@@ -40,18 +40,22 @@ type Scheduler struct {
 	agents     []*agents.Agent
 	supervisor *supervisor.Supervisor
 	logger     *slog.Logger
+
+	maxConcurrentAgents int
 }
 
 // New creates a Scheduler for the given agents.
 func New(
 	agentList []*agents.Agent,
 	sup *supervisor.Supervisor,
+	maxConcurrentAgents int,
 	logger *slog.Logger,
 ) *Scheduler {
 	return &Scheduler{
-		agents:     agentList,
-		supervisor: sup,
-		logger:     logger.With("component", "scheduler"),
+		agents:              agentList,
+		supervisor:          sup,
+		maxConcurrentAgents: maxConcurrentAgents,
+		logger:              logger.With("component", "scheduler"),
 	}
 }
 
@@ -116,23 +120,44 @@ func (s *Scheduler) Run(ctx context.Context, initialInput string) (map[string]ag
 // until every agent slot is resolved (success or permanent failure).
 func (s *Scheduler) runWave(
 	ctx context.Context,
-	wave []*agents.Agent,
+	waves []*agents.Agent,
 	defaultInput string,
 	previousResults map[string]agents.Result,
 ) (map[string]agents.Result, error) {
+	maxConcurrent := s.maxConcurrentAgents
+	if maxConcurrent <= 0 {
+		maxConcurrent = 10
+	}
+
+	if maxConcurrent > len(waves) {
+		maxConcurrent = len(waves)
+	}
+
+	sem := make(chan struct{}, maxConcurrent)
+
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	waveResults := make(map[string]agents.Result, len(wave))
+	waveResults := make(map[string]agents.Result, len(waves))
 	// waveErr captures the first permanent failure in this wave.
 	var waveErr error
 
-	for _, a := range wave {
+	for _, a := range waves {
 		wg.Add(1)
+
+		// Acquire semaphore slot before spawning
+		// if maxConcurrent goroutines are already spawned, this blocks until one of them finishes and releases its slot
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Done()
+			continue
+		}
 
 		// Launch each agent concurrently.
 		go func(ag *agents.Agent) {
 			defer wg.Done()
+			defer func() { <-sem }() // release semaphore slot
 
 			result, err := s.runAgentUntilDone(ctx, ag, defaultInput, previousResults)
 
