@@ -151,7 +151,7 @@ func (s *Scheduler) runWave(
 		case sem <- struct{}{}:
 		case <-ctx.Done():
 			wg.Done()
-			continue
+			return nil, ctx.Err()
 		}
 
 		// Launch each agent concurrently.
