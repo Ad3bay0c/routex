@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/Ad3bay0c/routex/tools"
@@ -98,7 +99,11 @@ func (t *ReadFileTool) Execute(_ context.Context, input json.RawMessage) (json.R
 		if err != nil {
 			return nil, fmt.Errorf("read_file: resolve path: %w", err)
 		}
-		if len(absFull) < len(absBase) || absFull[:len(absBase)] != absBase {
+		// Require the base dir itself or a path beneath it (base +
+		// separator). A raw prefix compare would wrongly admit a sibling
+		// like "/output" for base "/out".
+		safeBase := absBase + string(filepath.Separator)
+		if absFull != absBase && !strings.HasPrefix(absFull, safeBase) {
 			return nil, fmt.Errorf(
 				"read_file: path %q is outside the allowed directory %q",
 				params.Path, t.baseDir,
