@@ -1,5 +1,5 @@
 // Package all imports every built-in Routex tool sub-package, triggering
-// their init() functions so all 11 tools are registered automatically.
+// their init() functions so all 13 tools are registered automatically.
 //
 // Import this package when you want all built-in tools available without
 // listing them individually:
@@ -15,6 +15,7 @@
 //	    _ "github.com/Ad3bay0c/routex/tools/file"    // read_file, write_file
 //	    _ "github.com/Ad3bay0c/routex/tools/search"  // web_search, brave_search, wikipedia
 //	    _ "github.com/Ad3bay0c/routex/tools/web"     // http_request, read_url, scrape
+//	    _ "github.com/Ad3bay0c/routex/tools/storage" // read_s3, write_s3 (requires AWS credentials)
 //	    // omit tools/ai and tools/comms to avoid those dependencies
 //	)
 package all
@@ -26,5 +27,6 @@ import (
 	_ "github.com/Ad3bay0c/routex/tools/comms"
 	_ "github.com/Ad3bay0c/routex/tools/file"
 	_ "github.com/Ad3bay0c/routex/tools/search"
+	_ "github.com/Ad3bay0c/routex/tools/storage"
 	_ "github.com/Ad3bay0c/routex/tools/web"
 )
