@@ -51,6 +51,10 @@ type Config struct {
 	// LogLevel controls how verbose the runtime logs are.
 	// Valid values: "debug", "info", "warn", "error"
 	LogLevel string
+
+	// MaxConcurrentAgents limits how many agents run simultaneously
+	// within a wave. Defaults to 10 if not set.
+	MaxConcurrentAgents int
 }
 
 // MemoryConfig holds settings for the memory backend.
@@ -95,13 +99,15 @@ type ObservabilityConfig struct {
 // clean Go types while yamlFile can be messy raw strings.
 type yamlFile struct {
 	Runtime struct {
-		Name        string `yaml:"name"`
-		LLMProvider string `yaml:"llm_provider"`
-		Model       string `yaml:"model"`
-		APIKey      string `yaml:"api_key"`
-		BaseURL     string `yaml:"base_url"`
-		LogLevel    string `yaml:"log_level"`
-		EnvFile     string `yaml:"env_file"`
+		Name                string `yaml:"name"`
+		LLMProvider         string `yaml:"llm_provider"`
+		Model               string `yaml:"model"`
+		APIKey              string `yaml:"api_key"`
+		BaseURL             string `yaml:"base_url"`
+		LogLevel            string `yaml:"log_level"`
+		EnvFile             string `yaml:"env_file"`
+		MaxConcurrentAgents int    `yaml:"max_concurrent_agents"`
+		MaxLLMRetries       int    `yaml:"max_llm_retries"`
 	} `yaml:"runtime"`
 
 	Task struct {
@@ -261,14 +267,19 @@ func LoadConfig(path string, opts ...LoadOption) (*Runtime, error) {
 func buildConfig(raw yamlFile) (Config, error) {
 	cfg := Config{}
 
-	// ── Runtime section ───────────────────────────────────────────
+	// Runtime section
 	cfg.Name = envOr(raw.Runtime.Name, "routex")
 	cfg.LogLevel = envOr(raw.Runtime.LogLevel, "info")
 
-	// ── LLM section ───────────────────────────────────────────────
+	cfg.MaxConcurrentAgents = raw.Runtime.MaxConcurrentAgents
+	if cfg.MaxConcurrentAgents <= 0 {
+		cfg.MaxConcurrentAgents = 10 // default
+	}
+
+	// LLM section
 	cfg.LLM.Provider = env(raw.Runtime.LLMProvider)
 	if cfg.LLM.Provider == "" {
-		return cfg, fmt.Errorf("runtime.llm_provider is required — valid values: anthropic, openai, ollama")
+		return cfg, fmt.Errorf("runtime.llm_provider is required — valid values: anthropic, openai, ollama, gemini")
 	}
 
 	cfg.LLM.Model = env(raw.Runtime.Model)
@@ -288,7 +299,12 @@ func buildConfig(raw yamlFile) (Config, error) {
 
 	cfg.LLM.BaseURL = env(raw.Runtime.BaseURL)
 
-	// ── Task section ──────────────────────────────────────────────
+	cfg.LLM.MaxRetries = raw.Runtime.MaxLLMRetries
+	if cfg.LLM.MaxRetries <= 0 {
+		cfg.LLM.MaxRetries = 3 // default
+	}
+
+	// Task section
 	// ROUTEX_TASK env var wins over the YAML value
 	// env() handles the "env:MY_TASK_VAR" case too
 	taskInput := os.Getenv("ROUTEX_TASK")
@@ -307,7 +323,7 @@ func buildConfig(raw yamlFile) (Config, error) {
 		cfg.Task.MaxDuration = d
 	}
 
-	// ── Tools section ─────────────────────────────────────────────
+	// Tools section
 	for _, t := range raw.Tools {
 		if t.Name == "" {
 			return cfg, fmt.Errorf("tools: every tool must have a name")
@@ -339,7 +355,7 @@ func buildConfig(raw yamlFile) (Config, error) {
 		})
 	}
 
-	// ── Agents section ────────────────────────────────────────────
+	// Agents section
 	if len(raw.Agents) == 0 {
 		return cfg, errors.New("at least one agent is required under agents: ")
 	}
@@ -452,7 +468,7 @@ func buildConfig(raw yamlFile) (Config, error) {
 		}
 	}
 
-	// ── Memory section ────────────────────────────────────────────
+	// Memory section
 	cfg.Memory.Backend = envOr(raw.Memory.Backend, "inmem")
 	if cfg.Memory.Backend != "inmem" && cfg.Memory.Backend != "redis" {
 		return cfg, fmt.Errorf(
@@ -484,7 +500,7 @@ func buildConfig(raw yamlFile) (Config, error) {
 		)
 	}
 
-	// ── Observability section ─────────────────────────────────────
+	// Observability section
 	cfg.Observability.Tracing = raw.Observability.Tracing
 	cfg.Observability.Metrics = raw.Observability.Metrics
 	cfg.Observability.JaegerEndpoint = envOr(
@@ -500,38 +516,6 @@ func buildConfig(raw yamlFile) (Config, error) {
 }
 
 // loadEnvFile loads a .env file into the process environment.
-// Called at the very start of LoadConfig() before any env: references
-// are resolved — this is what makes "env:ANTHROPIC_API_KEY" work without
-// the user having to run `export` commands in their terminal.
-//
-// ── Development vs Production ─────────────────────────────────────
-//
-// DEVELOPMENT — use env_file to load a local .env file:
-//
-//	runtime:
-//	  env_file: "."          # loads .env next to agents.yaml
-//	  env_file: ".env.local" # or a named file
-//
-// PRODUCTION — omit env_file entirely. Never use .env files in production.
-// Inject secrets through your deployment platform instead:
-//   - Docker:      --env-file or -e flags, or Docker secrets
-//   - Kubernetes:  Secrets mounted as env vars or a secrets manager
-//   - AWS:         Parameter Store, Secrets Manager, or ECS task definitions
-//   - Fly.io:      fly secrets set KEY=value
-//   - Railway:     Dashboard environment variables
-//   - Heroku:      heroku config:set KEY=value
-//
-// .env files in production are a security risk — they can be accidentally
-// committed, leaked in logs, or exposed in container images.
-//
-// envFile behaviour:
-//
-//	""           — no env file loading (correct for production)
-//	"."          — loads .env from the config file's directory (development)
-//	".env.local" — loads a specific named file (development)
-//
-// Variables already set in the environment are never overwritten.
-// godotenv follows this convention — platform secrets always win over the file.
 func loadEnvFile(envFile, configPath string) error {
 	if envFile == "" {
 		// Not set — correct for production. Platform injects env vars directly.
@@ -555,7 +539,7 @@ func loadEnvFile(envFile, configPath string) error {
 		envPath = filepath.Clean(filepath.Join(configDir, envFile))
 	}
 
-	// ── Path traversal check ──────────────────────────────────────
+	// Path traversal check
 	// Verify the resolved path is inside the config directory.
 	// filepath.Abs ensures both sides are canonical before comparing —
 	// symlinks are not resolved here intentionally (we check the path
@@ -586,8 +570,6 @@ func loadEnvFile(envFile, configPath string) error {
 		)
 	}
 
-	// Load the file — godotenv.Load never overwrites existing env vars
-	// so platform-injected secrets always take precedence over the file.
 	err = godotenv.Load(absEnvPath)
 	if err != nil {
 		// File not found is a soft error for "." — developer may not have

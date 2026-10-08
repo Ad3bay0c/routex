@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Ad3bay0c/routex/tools"
 )
 
 func TestWriteFile_BasicWrite(t *testing.T) {
@@ -131,5 +133,52 @@ func TestWriteFile_NameAndSchema(t *testing.T) {
 	}
 	if _, ok := schema.Parameters["content"]; !ok {
 		t.Error("schema should have 'content' parameter")
+	}
+}
+
+// TestWriteFile_FactoryHonorsBaseDir verifies the built-in factory sandboxes
+// writes to cfg.BaseDir. Previously the factory ignored BaseDir, so a
+// base_dir set in agents.yaml was a no-op and agents could write anywhere.
+func TestWriteFile_FactoryHonorsBaseDir(t *testing.T) {
+	dir := t.TempDir()
+	tool, err := tools.Resolve("write_file", tools.ToolConfig{Name: "write_file", BaseDir: dir})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// A write inside the sandbox lands under dir.
+	in := mustMarshal(t, map[string]any{"path": "report.txt", "content": "ok"})
+	if _, err := tool.Execute(context.Background(), in); err != nil {
+		t.Fatalf("write inside base dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "report.txt")); err != nil {
+		t.Fatalf("file not written into base dir: %v", err)
+	}
+
+	// A traversal attempt is rejected — the sandbox is actually enforced.
+	esc := mustMarshal(t, map[string]any{"path": "../escape.txt", "content": "attack"})
+	if _, err := tool.Execute(context.Background(), esc); err == nil {
+		t.Fatal("traversal should be blocked when factory honors base_dir")
+	}
+}
+
+// TestWriteFile_SiblingDirBypassBlocked guards against a raw prefix compare
+// admitting a sibling directory whose name extends the base dir's name.
+func TestWriteFile_SiblingDirBypassBlocked(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "out")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	tool := WriteFileIn(base)
+
+	// Resolves to <root>/output/x.txt — a sibling of the "out" sandbox that
+	// shares its string prefix. Must be rejected.
+	in := mustMarshal(t, map[string]any{"path": "../output/x.txt", "content": "attack"})
+	if _, err := tool.Execute(context.Background(), in); err == nil {
+		t.Fatal("sibling dir sharing the base name should be blocked")
+	}
+	if _, err := os.Stat(filepath.Join(root, "output", "x.txt")); err == nil {
+		t.Fatal("file escaped the sandbox into a sibling directory")
 	}
 }

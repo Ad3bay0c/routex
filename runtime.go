@@ -351,7 +351,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	)
 
 	// Build the scheduler — passes the supervisor so the two cooperate on failures.
-	rt.scheduler = scheduler.New(rt.agentList, rt.supervisor, rt.logger)
+	rt.scheduler = scheduler.New(rt.agentList, rt.supervisor, rt.cfg.MaxConcurrentAgents, rt.logger)
 
 	// Launch the supervisor — starts all agent goroutines.
 	rt.supervisor.Start(ctx)

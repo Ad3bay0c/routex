@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Ad3bay0c/routex/tools"
 )
 
 func init() {
 	tools.RegisterBuiltin("write_file", func(cfg tools.ToolConfig) (tools.Tool, error) {
+		if cfg.BaseDir != "" {
+			return WriteFileIn(cfg.BaseDir), nil
+		}
 		return WriteFile(), nil
 	})
 }
@@ -130,9 +134,12 @@ func (t *WriteFileTool) Execute(_ context.Context, input json.RawMessage) (json.
 		if err != nil {
 			return nil, fmt.Errorf("write_file: resolve path: %w", err)
 		}
-		// Ensure the resolved path starts with the base directory
-		// This is the path traversal prevention check
-		if len(absFull) < len(absBase) || absFull[:len(absBase)] != absBase {
+		// Ensure the resolved path stays inside the base directory.
+		// A raw prefix compare is not enough: base "/out" would wrongly
+		// admit a sibling like "/output". Require the base dir itself or a
+		// path beneath it (base + separator).
+		safeBase := absBase + string(filepath.Separator)
+		if absFull != absBase && !strings.HasPrefix(absFull, safeBase) {
 			return nil, fmt.Errorf(
 				"write_file: path %q is outside the allowed directory %q",
 				params.Path, t.baseDir,

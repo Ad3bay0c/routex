@@ -52,6 +52,7 @@ func TestNew_ValidProviders(t *testing.T) {
 	}{
 		{"anthropic", "anthropic"},
 		{"openai", "openai"},
+		{"gemini", "gemini"},
 	}
 
 	for _, tt := range tests {

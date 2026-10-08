@@ -482,6 +482,17 @@ func TestBuildConfig_OllamaNoAPIKey(t *testing.T) {
 	}
 }
 
+func TestBuildConfig_GeminiRequiresAPIKey(t *testing.T) {
+	raw := minimalValidRaw()
+	raw.Runtime.LLMProvider = "gemini"
+	raw.Runtime.Model = "gemini-2.0-flash"
+	raw.Runtime.APIKey = ""
+	_, err := buildConfig(raw)
+	if err == nil || !strings.Contains(err.Error(), "api_key is required") {
+		t.Fatalf("want api_key error for gemini: %v", err)
+	}
+}
+
 func TestBuildConfig_TaskAndObservability(t *testing.T) {
 	t.Setenv("ROUTEX_TASK", "env task wins")
 	defer t.Setenv("ROUTEX_TASK", "")
